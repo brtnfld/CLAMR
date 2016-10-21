@@ -97,7 +97,12 @@ int L7_Terminate (void)
 	if ( l7.initialized_mpi == 1 ){
 		ierr = MPI_Finalized ( &flag );
 		if ( !flag ){
+#ifdef HDF5_FF
+                        MPI_Barrier( MPI_COMM_WORLD );
+                        EFF_finalize();
+#endif
 			ierr = MPI_Finalize ();
+
 			L7_ASSERT( ierr == MPI_SUCCESS, "MPI_Finalize", ierr );
 		}
 		l7.initialized_mpi = 0;

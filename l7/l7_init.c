@@ -146,6 +146,10 @@ int L7_Init (
        l7.initialized_mpi = 0;
        l7.mpi_initialized = 0;
     }
+
+#ifdef HDF5_FF
+    EFF_init( MPI_COMM_WORLD, MPI_INFO_NULL);
+#endif
       
     if (*numpes != -1) {
         ierr = MPI_Comm_rank (MPI_COMM_WORLD, &l7.penum );

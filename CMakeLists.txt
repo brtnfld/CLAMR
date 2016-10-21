@@ -210,6 +210,14 @@ else (NOT HDF5_HDF5_HEADER)
 endif (NOT HDF5_HDF5_HEADER)
 message (STATUS "HDF5 link libs: ${HDF5_LIBS}")
 
+option (HDF5_ENABLE_FF_SUPPORT "Enable FF version of HDF5" OFF)
+mark_as_advanced (HDF5_ENABLE_FF_SUPPORT)
+
+if (HDF5_ENABLE_FF_SUPPORT)
+  add_definitions (-DHDF5_FF)
+  message (STATUS "Enabling HDF5 FF Support")
+endif (HDF5_ENABLE_FF_SUPPORT)
+
 INCLUDE_DIRECTORIES (${HDF5_INCLUDE_DIR})
 
 #-----------------------------------------------------------------------------
