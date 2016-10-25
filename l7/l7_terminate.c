@@ -39,6 +39,9 @@
 #include <stdlib.h>
 #include "l7.h"
 #include "l7p.h"
+#ifdef HDF5_FF
+#include "hdf5.h"
+#endif
 
 #define L7_LOCATION "L7_TERMINATE"
 
@@ -98,7 +101,7 @@ int L7_Terminate (void)
 		ierr = MPI_Finalized ( &flag );
 		if ( !flag ){
 #ifdef HDF5_FF
-                        MPI_Barrier( MPI_COMM_WORLD );
+		        MPI_Barrier( MPI_COMM_WORLD );
                         EFF_finalize();
 #endif
 			ierr = MPI_Finalize ();

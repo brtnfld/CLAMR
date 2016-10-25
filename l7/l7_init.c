@@ -46,6 +46,9 @@
 #include "l7p.h"
 #include <stdlib.h>
 #include <dlfcn.h>
+#ifdef HDF5_FF
+#include "hdf5.h"
+#endif
 
 #define L7_LOCATION "L7_INIT"
 
