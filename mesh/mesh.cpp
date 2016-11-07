@@ -8521,7 +8521,7 @@ int Mesh::gpu_do_load_balance_local(size_t numcells, float *weight, MallocPlus &
 
             // Allocate space on GPU for temp arrays (used in double buffering)
             cl_mem dev_state_var_new = ezcl_malloc(NULL, gpu_state_memory.get_memory_name(dev_state_mem_ptr), &ncells, sizeof(cl_float), CL_MEM_READ_WRITE, 0);
-            gpu_state_memory.memory_add(dev_state_var_new, ncells, sizeof(cl_float), "dev_state_var_new", DEVICE_REGULAR_MEMORY);
+            gpu_state_memory.memory_add(dev_state_var_new, ncells, sizeof(cl_float), (size_t)ncells_global,"dev_state_var_new", DEVICE_REGULAR_MEMORY);
 
             //printf("DEBUG memory for proc %d is %p dev_state_new is %p\n",mype,dev_state_mem_ptr,dev_state_var_new);
 
@@ -10213,7 +10213,7 @@ void Mesh::store_checkpoint(Crux *crux)
 
    // Now add memory entries to database for storing checkpoint
    mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "mesh_int_dist_vals", RESTART_DATA);
-   mesh_memory.memory_add(int_vals, (size_t)num_int_vals, 4, "mesh_int_vals", RESTART_DATA);
+   mesh_memory.memory_add(int_vals, (size_t)num_int_vals, 4, (size_t)ncells_global, (size_t)noffset, "mesh_int_vals", RESTART_DATA);
    mesh_memory.memory_add(double_vals, (size_t)num_double_vals, 8, "mesh_double_vals", RESTART_DATA);
 
    mesh_memory.memory_add(cpu_counters, (size_t)MESH_COUNTER_SIZE, 4, "mesh_cpu_counters", RESTART_DATA);
@@ -10462,7 +10462,7 @@ void Mesh::set_bounds(int n){
         }
 #else 
      	if(lowerBound_Global == NULL) lowerBound_Global = (int *)malloc(1*sizeof(int)); 
-       	if(upperBound_Global == NULL) upperBound_Global = (int *)malloc(1*sizeof(int)); 
+       	if(upperBound_Global == NULL) upperBound_Global = (int *)malloc(1*sizeof(int));
         int lowerBound = 0;
         int upperBound = ncells;
         lowerBound_Global[0] = lowerBound;

@@ -173,7 +173,23 @@ void Crux::store_MallocPlus(MallocPlus memory){
       int num_elements = 1;
       for (uint i = 1; i < memory_item->mem_ndims; i++){
 	 num_elements *= memory_item->mem_nelem[i];
+	
       }
+
+      size_t numcells_glb;
+      MPI_Allreduce(&memory_item->mem_nelem[0], &numcells_glb, 1, MPI_UINT64_T, MPI_SUM,
+		    MPI_COMM_WORLD);
+
+      uint64_t *rncells; // All cell counts from each task
+
+      // Gather ncells on each processor
+      rncells = (uint64_t *) malloc(npes*sizeof(uint64_t));
+
+      MPI_Allgather(&memory_item->mem_nelem[0], 1, MPI_UNSIGNED_LONG_LONG, rncells, 1, MPI_LONG_LONG, MPI_COMM_WORLD);
+
+
+
+      //  printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
 
       if (DEBUG) {
         printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
@@ -200,6 +216,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
         
         hid_t sid;
         sid = H5Screate_simple (memory_item->mem_ndims, (hsize_t*)memory_item->mem_nelem, NULL);
+
         
         hid_t memtype;
         hid_t filetype;
@@ -256,49 +273,114 @@ void Crux::store_MallocPlus(MallocPlus memory){
           
           hid_t did;
           hsize_t dims[2], start[2], count[2];
-          hid_t sid1;
+          hid_t memspace, filespace;
 
           dims[0] = npes;
-          dims[1] =(hsize_t)memory_item->mem_nelem[0];
+          dims[1] = (hsize_t)memory_item->mem_nelem[0];
 
           count[0] = 1;
-          count[1] = 1;
+          count[1] = (hsize_t)memory_item->mem_nelem[0];
 
           start[0] = mype;
           start[1] = 0;
-          sid1 = H5Screate_simple (2, dims, NULL);
+          filespace = H5Screate_simple (2, dims, NULL);
+	  memspace = H5Screate_simple(2, count, NULL); 
 
-          did = H5Dcreate2 (gid, memory_item->mem_name, filetype, sid1, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-          H5Sselect_hyperslab(sid1, H5S_SELECT_SET, start, NULL, count, NULL ); 
-          h5err = H5Dwrite (did, memtype, H5S_ALL, sid1, plist_id, mem_ptr);
+	  if( strstr(memory_item->mem_name,"int_dist_vals") != NULL) {
+	      int *val = (int*)mem_ptr;
+	      printf("%d %s %d %d %d %d \n",mype, memory_item->mem_name,val[0],val[1],val[2],val[3]);
+	    }
+	  else {
+	      double *val = (double*)mem_ptr;
+	     printf("%s %f \n",memory_item->mem_name,val[0]);
+	    }
+
+          did = H5Dcreate2 (gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+          H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
+          h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
           
-          if(H5Sclose(sid1) < 0)
+          if(H5Sclose(filespace) < 0)
+            printf("HDF5: Could not close dataspace \n");
+          if(H5Sclose(memspace) < 0)
             printf("HDF5: Could not close dataspace \n");
           if(H5Dclose(did) < 0)
             printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
 
-        } else {
+	} else if( (strstr(memory_item->mem_name,"bootstrap_") !=NULL) ) {
 
           hid_t did;
-          did = H5Dcreate2 (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-          h5err = H5Dwrite (did, memtype, H5S_ALL, H5S_ALL, plist_id, mem_ptr);
+	  did = H5Dcreate2 (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+ 	  if(mype == 0) {
+ 	    h5err = H5Dwrite (did, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
+ 	  }
+// else {
+// 	    h5err = H5Dwrite (did, memtype, H5S_ALL, H5S_ALL, plist_id, NULL);
+// 	  }
+	  
           if(H5Dclose(did) < 0)
             printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-        }
-        if(H5Sclose(sid) < 0)
-          printf("HDF5: Could not close dataspace \n");
+
+
+        } else {
+
+#ifdef HAVE_MPI
+	  hid_t filespace;
+	  hid_t memspace;
+          hsize_t dims[1], start[1], count[1];
+#else
+	    
+	  memspace = H5S_ALL;
+	  filespace = H5S_ALL;
+#endif
+	  
+	  //	  printf("ncells glb %s %ld \n",memory_item->mem_name,memory_item->ncells_glb);
+
+          hid_t did;
+
+          dims[0] = (hsize_t)numcells_glb;
+
+          count[0] = (hsize_t)memory_item->mem_nelem[0];
+
+	  start[0] = 0;
+	  for (int j=0; j<mype; j++) {
+	    start[0] = start[0] + rncells[j];
+	  }
+
+
+          start[0] = (hsize_t)(count[0]*mype);
+
+          filespace = H5Screate_simple (1, dims, NULL);
+
+	  memspace = H5Screate_simple(1, count, NULL);
+
+	  
+	  did = H5Dcreate2(gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+	  // Select hyperslab in the file.
+	  H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
+
+	  h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
+	  if(H5Dclose(did) < 0)
+	    printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
+	  
+	  h5err = H5Sclose(filespace);
+	  h5err = H5Sclose(memspace);
+
+         }
+	if(H5Sclose(sid) < 0)
+	  printf("HDF5: Could not close dataspace \n");
 #ifdef HAVE_MPI
         if(H5Pclose(plist_id) < 0)
           printf("HDF5: Could not close property list \n");
 #endif
       }
 #endif
-      store_field_header(memory_item->mem_name,20);
-      if (memory_item->mem_elsize == 4){
-         store_int_array((int *)mem_ptr, num_elements);
-      } else {
-         store_double_array((double *)mem_ptr, num_elements);
-      }
+//       store_field_header(memory_item->mem_name,20);
+//       if (memory_item->mem_elsize == 4){
+//          store_int_array((int *)mem_ptr, num_elements);
+//       } else {
+//          store_double_array((double *)mem_ptr, num_elements);
+//       }
    }
 
 }

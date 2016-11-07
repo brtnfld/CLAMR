@@ -811,8 +811,8 @@ void store_crux_data(Crux *crux, int ncycle)
    double_vals[ 3] = deltaT;
    double_vals[ 4] = upper_mass_diff_percentage;
 
-   clamr_bootstrap_memory.memory_add(int_vals, size_t(num_int_vals), 4, "bootstrap_int_vals", RESTART_DATA);
-   clamr_bootstrap_memory.memory_add(double_vals, size_t(num_double_vals), 8, "bootstrap_double_vals", RESTART_DATA);
+   clamr_bootstrap_memory.memory_add(int_vals, size_t(num_int_vals), 4,"bootstrap_int_vals", RESTART_DATA);
+   clamr_bootstrap_memory.memory_add(double_vals, size_t(num_double_vals), 8,"bootstrap_double_vals", RESTART_DATA);
 
    crux->store_begin(nsize, ncycle);
 
