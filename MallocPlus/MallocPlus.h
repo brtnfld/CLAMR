@@ -92,6 +92,10 @@ struct malloc_plus_memory_entry {
    size_t  mem_elsize;    //!< element size for type of data
    int     mem_flags;     //!< flags for special handling
    char   *mem_name;      //!< name of memory entry
+
+   size_t mem_ncells_global;  //!< number of global cells
+   size_t mem_noffset;        //!< data offset
+
 };
 
 struct cmp_str
@@ -352,6 +356,9 @@ public:
       const char *name, int flags=0);
 
    void *memory_add(void *malloc_mem_ptr, int ndim, size_t *nelem, size_t elsize,
+      const char *name, int flags=0);
+
+   void *memory_add(void *malloc_mem_ptr, size_t nelem, size_t elsize, size_t ncells_global, size_t noffset,
       const char *name, int flags=0);
 
 /****************************************************************//**

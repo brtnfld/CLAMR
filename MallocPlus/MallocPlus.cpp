@@ -399,6 +399,28 @@ void MallocPlus::memory_request_all(size_t new_capacity){
    }
 }
 
+
+// This routine is for memory allocated by the host program and added to the database
+void *MallocPlus::memory_add(void *malloc_mem_ptr, size_t nelem, size_t elsize, size_t ncells_global, size_t noffset, const char *name, int flags){
+   malloc_plus_memory_entry *memory_item = (malloc_plus_memory_entry *)malloc(sizeof(malloc_plus_memory_entry));
+
+   memory_item->mem_noffset       = noffset;
+   memory_item->mem_ncells_global = ncells_global;
+   memory_item->mem_nelem     = (size_t *)malloc(1*sizeof(size_t));
+   memory_item->mem_nelem[0]  = nelem;
+   memory_item->mem_ndims     = 1;
+   memory_item->mem_capacity  = nelem;
+   memory_item->mem_elsize    = elsize;
+   memory_item->mem_flags     = flags;
+   memory_item->mem_ptr       = malloc_mem_ptr;
+   memory_item->mem_name      = strdup(name); // mallocs memory
+   memory_ptr_dict.insert(std::pair<void *, malloc_plus_memory_entry*>(malloc_mem_ptr, memory_item) );
+   memory_name_dict.insert(std::pair<string, malloc_plus_memory_entry*>(name, memory_item) );
+   if (DEBUG) printf("MALLOC_PLUS_MEMORY_ADD: DEBUG -- added memory pointer for %s is %p\n",name,malloc_mem_ptr);
+
+   return(malloc_mem_ptr);
+}
+
 // This routine is for memory allocated by the host program and added to the database
 void *MallocPlus::memory_add(void *malloc_mem_ptr, size_t nelem, size_t elsize, const char *name, int flags){
    malloc_plus_memory_entry *memory_item = (malloc_plus_memory_entry *)malloc(sizeof(malloc_plus_memory_entry));
@@ -417,6 +439,7 @@ void *MallocPlus::memory_add(void *malloc_mem_ptr, size_t nelem, size_t elsize, 
 
    return(malloc_mem_ptr);
 }
+
 
 // This routine is for memory allocated by the host program and added to the database
 void *MallocPlus::memory_add(void *malloc_mem_ptr, int ndim, size_t *nelem, size_t elsize, const char *name, int flags){
