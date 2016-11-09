@@ -506,6 +506,9 @@ void Crux::store_begin(size_t nsize, int ncycle)
   void *token1, *token2, *token3;
   void *gset_token1, *gset_token2, *gset_token3;
   size_t token_size1, token_size2, token_size3;
+  size_t token_size[3];
+  void *gset_token[3];
+  int dims_token[3];
 #endif
 
 #ifdef HAVE_MPI
@@ -531,11 +534,11 @@ void Crux::store_begin(size_t nsize, int ncycle)
 
       if(USE_HDF5) {
 
-#ifdef HDF5_FF
+#  ifdef HDF5_FF
 	sprintf(backup_file,"backup%05d.h5",ncycle);
-#else
+#  else
 	sprintf(backup_file,"%s/backup%05d.h5",checkpoint_directory,ncycle);
-#endif
+#  endif
 
         plist_id = H5P_DEFAULT; 
 #  ifdef HAVE_MPI
@@ -551,21 +554,21 @@ void Crux::store_begin(size_t nsize, int ncycle)
         if( (plist_id = H5Pcreate(H5P_FILE_ACCESS)) < 0)
           printf("HDF5: Could not create property list \n");
 
-#    ifdef HDF5_FF
+#      ifdef HDF5_FF
 	H5Pset_fapl_iod(plist_id, MPI_COMM_WORLD, MPI_INFO_NULL);
 
 	// set the metada data integrity checks to happend at transfer through mercury
  	uint32_t cs_scope = 0;
  	cs_scope |= H5_CHECKSUM_TRANSFER;
  	H5Pset_metadata_integrity_scope(plist_id, cs_scope);
-#    else
+#      else
 	if( H5Pset_libver_bounds(plist_id, H5F_LIBVER_LATEST, H5F_LIBVER_LATEST) < 0)
           printf("HDF5: Could set libver bounds \n");
         H5Pset_fapl_mpio(plist_id, MPI_COMM_WORLD, MPI_INFO_NULL);
-#    endif
+#      endif
 #  endif
 
-#ifdef HDF5_FF
+#  ifdef HDF5_FF
 
 	// create an event Queue for managing asynchronous requests.
 	e_stack = H5EScreate();
@@ -573,17 +576,17 @@ void Crux::store_begin(size_t nsize, int ncycle)
 
 	h5_fid = H5Fcreate_ff(backup_file, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id, H5_EVENT_STACK_NULL );
 	assert(h5_fid > 0);
-#else
+#  else
         h5_fid = H5Fcreate(backup_file, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
-#endif
+#  endif
         if(!h5_fid){
           printf("HDF5: Could not write HDF5 %s at iteration %d\n",backup_file,ncycle);
         }
-#ifdef HAVE_MPI
+#  ifdef HAVE_MPI
         if(H5Pclose(plist_id) < 0)
           printf("HDF5: Could not close property list \n");
-#endif
-#ifdef HDF5_FF
+#  endif
+#  ifdef HDF5_FF
 
 	// Acquire a read handle for container version 1 and create a read context.
 	version = 1;
@@ -618,69 +621,77 @@ void Crux::store_begin(size_t nsize, int ncycle)
 
 	  
 	  // Get token for group
-	  ret = H5Oget_token(h5_gid_c, NULL, &token_size1);
+	  ret = H5Oget_token(h5_gid_c, NULL, &token_size[0]);
 	  assert(0 == ret);
-	  ret = H5Oget_token(h5_gid_m, NULL, &token_size2);
+	  ret = H5Oget_token(h5_gid_m, NULL, &token_size[1]);
 	  assert(0 == ret);
-	  ret = H5Oget_token(h5_gid_s, NULL, &token_size3);
+	  ret = H5Oget_token(h5_gid_s, NULL, &token_size[2]);
 	  assert(0 == ret);
 	  
 	  // allocate buffers for each token
-	  gset_token1 = malloc(token_size1);
-	  gset_token2 = malloc(token_size2);
-	  gset_token3 = malloc(token_size3);
+
+	  gset_token[0] = malloc(token_size[0]);
+	  gset_token[1] = malloc(token_size[1]);
+	  gset_token[2] = malloc(token_size[2]);
 
 	  // get the token buffer
-	  ret = H5Oget_token(h5_gid_c, gset_token1, &token_size1);
+
+	  ret = H5Oget_token(h5_gid_c, gset_token[0], &token_size[0]);
 	  assert(0 == ret);
-	  ret = H5Oget_token(h5_gid_m, gset_token2, &token_size2);
+	  ret = H5Oget_token(h5_gid_m, gset_token[1], &token_size[1]);
 	  assert(0 == ret);
-	  ret = H5Oget_token(h5_gid_s, gset_token3, &token_size3);
+	  ret = H5Oget_token(h5_gid_s, gset_token[2], &token_size[2]);
 	  assert(0 == ret);
 
 	  // Broadcast token size
-	  MPI_Bcast(&token_size1, sizeof(token_size1), MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(&token_size2, sizeof(token_size2), MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(&token_size3, sizeof(token_size3), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+	  MPI_Bcast(&token_size, sizeof(size_t)*3, MPI_BYTE, 0, MPI_COMM_WORLD);
 
 	  // Broadcast token
-	  MPI_Bcast(gset_token1, token_size1, MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(gset_token2, token_size2, MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(gset_token3, token_size3, MPI_BYTE, 0, MPI_COMM_WORLD);
+	  //MPI_Bcast(gset_token, token_size[0]+token_size[1]+token_size[2], MPI_BYTE, 0, MPI_COMM_WORLD);
+
+ 	  MPI_Bcast(gset_token[0], token_size[0], MPI_BYTE, 0, MPI_COMM_WORLD);
+  	  MPI_Bcast(gset_token[1], token_size[1], MPI_BYTE, 0, MPI_COMM_WORLD);
+  	  MPI_Bcast(gset_token[2], token_size[2], MPI_BYTE, 0, MPI_COMM_WORLD);
 
 	} 
 	else {
 	  // Receive token size
-	  MPI_Bcast(&token_size1, sizeof(token_size1), MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(&token_size2, sizeof(token_size2), MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(&token_size3, sizeof(token_size3), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+	  MPI_Bcast(&token_size, sizeof(size_t)*3, MPI_BYTE, 0, MPI_COMM_WORLD);
 
 	  // Allocate token
-	  gset_token1 = malloc(token_size1);
-	  gset_token2 = malloc(token_size2);
-	  gset_token3 = malloc(token_size3);
+
+	  gset_token[0] = malloc(token_size[0]);
+	  gset_token[1] = malloc(token_size[1]);
+	  gset_token[2] = malloc(token_size[2]);
 
 	  // Receive token
-	  MPI_Bcast(gset_token1, token_size1, MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(gset_token2, token_size2, MPI_BYTE, 0, MPI_COMM_WORLD);
-	  MPI_Bcast(gset_token3, token_size3, MPI_BYTE, 0, MPI_COMM_WORLD);
+
+	  //MPI_Bcast(gset_token, token_size[0]+token_size[1]+token_size[2], MPI_BYTE, 0, MPI_COMM_WORLD);
+
+
+ 	  MPI_Bcast(gset_token[0], token_size[0], MPI_BYTE, 0, MPI_COMM_WORLD);
+ 	  MPI_Bcast(gset_token[1], token_size[1], MPI_BYTE, 0, MPI_COMM_WORLD);
+ 	  MPI_Bcast(gset_token[2], token_size[2], MPI_BYTE, 0, MPI_COMM_WORLD);
+
 
 	  // Open group by token
-	  h5_gid_c = H5Oopen_by_token(gset_token1, tid1, e_stack);
-	  h5_gid_m = H5Oopen_by_token(gset_token2, tid1, e_stack);
-	  h5_gid_s = H5Oopen_by_token(gset_token3, tid1, e_stack);
+ 	  h5_gid_c = H5Oopen_by_token(gset_token[0], tid1, e_stack);
+ 	  h5_gid_m = H5Oopen_by_token(gset_token[1], tid1, e_stack);
+ 	  h5_gid_s = H5Oopen_by_token(gset_token[2], tid1, e_stack);
 	}
-	free(gset_token1);
-	free(gset_token2);
-	free(gset_token3);
-#else
+ 	free(gset_token[0]);
+ 	free(gset_token[1]);
+ 	free(gset_token[2]);
+#  else
         if( (h5_gid_c = H5Gcreate(h5_fid, "clamr", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) ) < 0) 
           printf("HDF5: Could not create \"clamr\" group \n");
         if( (h5_gid_m = H5Gcreate(h5_fid, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) ) < 0)
           printf("HDF5: Could not create \"mesh\" group \n");
         if( (h5_gid_s = H5Gcreate(h5_fid, "state", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) ) < 0)
           printf("HDF5: Could not create \"state\" group \n");
-#endif
+#  endif
       }
 
 #endif
