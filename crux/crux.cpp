@@ -106,6 +106,12 @@ float checkpoint_timing_sum = 0.0f;
 float checkpoint_timing_size = 0.0f;
 int rollback_attempt = 0;
 
+char backup_file[60];
+
+void
+print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int my_rank );
+
+
 Crux::Crux(int crux_type_in, int num_of_rollback_states_in, bool restart)
 {
    num_of_rollback_states = num_of_rollback_states_in;
@@ -239,6 +245,13 @@ void Crux::store_MallocPlus(MallocPlus memory){
           filetype = H5T_NATIVE_INT;
         } else {
           memtype = H5T_NATIVE_DOUBLE;
+
+
+// 	  if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ) {
+// 	    filetype = H5T_NATIVE_LONG;
+// 	    memtype = H5T_NATIVE_LONG;
+// 	  }
+
           if(h5_spoutput) {
             filetype = H5T_NATIVE_FLOAT;
           } else {
@@ -527,7 +540,6 @@ void Crux::store_begin(size_t nsize, int ncycle)
       store_fp = fmemopen(crux_data[cp_num], nsize, "w");
    }
    if(crux_type == CRUX_DISK){
-      char backup_file[60];
 
 #ifdef HAVE_HDF5
       hid_t plist_id;
@@ -558,9 +570,9 @@ void Crux::store_begin(size_t nsize, int ncycle)
 	H5Pset_fapl_iod(plist_id, MPI_COMM_WORLD, MPI_INFO_NULL);
 
 	// set the metada data integrity checks to happend at transfer through mercury
- 	uint32_t cs_scope = 0;
- 	cs_scope |= H5_CHECKSUM_TRANSFER;
- 	H5Pset_metadata_integrity_scope(plist_id, cs_scope);
+//  	uint32_t cs_scope = 0;
+//  	cs_scope |= H5_CHECKSUM_TRANSFER;
+//  	H5Pset_metadata_integrity_scope(plist_id, cs_scope);
 #      else
 	if( H5Pset_libver_bounds(plist_id, H5F_LIBVER_LATEST, H5F_LIBVER_LATEST) < 0)
           printf("HDF5: Could set libver bounds \n");
@@ -911,6 +923,72 @@ void Crux::store_end(void)
    }
 
    checkpoint_counter++;
+
+#if 1
+
+   // Now, reopen file and show contents of all available CVs
+
+   hid_t last_rc_id;
+   uint64_t last_version, v, version;
+   hid_t file_id, fapl_id, rc_id;
+
+   /* Reopen the file Read/Write */
+   fprintf( stderr, "%d: open the container\n", mype );
+
+   fapl_id = H5Pcreate( H5P_FILE_ACCESS );
+   H5Pset_fapl_iod( fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL );
+
+   /* Get latest CV on open */
+   file_id = H5Fopen_ff(backup_file, H5F_ACC_RDONLY, fapl_id, &last_rc_id, H5_EVENT_STACK_NULL ); 
+
+   H5RCget_version( last_rc_id, &last_version );
+
+   v = last_version;
+   for ( v; v <= last_version; v++ ) {
+     version = v;
+     if ( 0 == mype ) {
+       if(v < last_version) {
+	 fprintf( stderr, "r%d: Try to acquire read context for cv %d\n", mype, (int)version );
+	 rc_id = H5RCacquire( file_id, &version, H5P_DEFAULT, H5_EVENT_STACK_NULL );
+       }
+       else
+	 rc_id = last_rc_id;
+     }
+
+     MPI_Bcast( &rc_id, 1, MPI_INT64_T, 0, MPI_COMM_WORLD );
+
+     if ( rc_id < 0 ) {
+       if ( 0 == mype ) {
+	 fprintf( stderr, "r%d: Failed to acquire read context for cv %d\n", mype, (int)v );
+       }
+     } else {
+       if ( 0 != mype ) {
+	 rc_id = H5RCcreate( file_id, version ); 
+       }
+       assert ( version == v );
+       print_container_contents(file_id, rc_id, "/", mype );
+
+       MPI_Barrier( MPI_COMM_WORLD );
+       if(v < last_version) {
+	 if ( 0 == mype ) {
+	   H5RCrelease( rc_id, H5_EVENT_STACK_NULL ); 
+	 }
+	 H5RCclose( rc_id ); 
+       }
+     }
+   }
+
+   /* Release the read handle and close read context on cv obtained from H5Fopen_ff (by all ranks) */
+   H5RCrelease( last_rc_id, H5_EVENT_STACK_NULL );
+   H5RCclose( last_rc_id );
+
+   /* Close 2 H5 Objects that are still open */
+   fprintf( stderr, "r%d: close all h5 objects that are still open\n", mype );
+   H5Fclose_ff( file_id, 1, H5_EVENT_STACK_NULL );
+   H5Pclose( fapl_id );
+
+#endif
+
 }
 
 int restore_type = RESTORE_NONE;
@@ -980,7 +1058,6 @@ void Crux::restore_begin(char *restart_file, int rollback_counter)
       restore_fp = fmemopen(crux_data[rs_num], crux_data_size[rs_num], "r");
       restore_type = RESTORE_ROLLBACK;
    } else if(crux_type == CRUX_DISK){
-      char backup_file[60];
 
       sprintf(backup_file,"%s/backup%d.crx",checkpoint_directory,rs_num);
       printf("Restoring state from disk file %s rollback_counter %d\n",backup_file,rollback_counter);
@@ -1097,4 +1174,172 @@ int Crux::get_rollback_number()
 {
   rollback_attempt++;
   return(checkpoint_counter % num_of_rollback_states);
+}
+
+/*
+ * Helper function used to recursively print container contents
+ * for container identified by "file_id" 
+ * in read context identified by "rc_id"
+ * with path to current level in "grp_path"
+ * and "my_rank" used to identify the process doing the reading / printing.
+ */
+void
+print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int my_rank )
+{
+   herr_t ret;
+   uint64_t cv;
+   htri_t exists;
+   char path_to_object[1024];
+   hid_t obj_id;
+   char name[3];
+   int i;
+
+   static int lvl = 0;     /* level in recursion - used to format printing */
+   char preface[128];    
+   char line[1024];
+   char path[128];
+   long attr_long_val[1];
+   double attr_double_val[1];
+
+   /* Get the container version for the read context */
+   ret = H5RCget_version( rc_id, &cv ); 
+
+   /* Set up the preface and adding version number */
+   sprintf( preface, "M6.2-r%d: cv %d: ", my_rank, (int)cv );
+
+   /* Start the printing */
+   if ( lvl == 0 ) {
+      fprintf( stderr, "%s ----- Container Contents ------------\n", preface );
+   } 
+
+   /* Attributes */
+   for ( i = 1; i < 3; i++ ) {
+      if ( i == 1 ) {
+	strcpy(path, "/mesh/");
+	strcpy(name, "mesh_double_vals" );
+      } else if (i == 2) {
+	strcpy(path, "/state/");
+	strcpy(name, "state_long_vals" );
+      }
+      ret = H5Aexists_by_name_ff( file_id, path, name, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL ); 
+      if ( exists ) { 
+	hid_t attr_id;
+	attr_id = H5Aopen_by_name_ff( file_id, path, name, H5P_DEFAULT, H5P_DEFAULT, rc_id, H5_EVENT_STACK_NULL ); 
+	assert( attr_id >= 0 );
+   
+	 if(i == 1) {
+	   ret = H5Aread_ff( attr_id,  H5T_IEEE_F64LE, attr_double_val, rc_id, H5_EVENT_STACK_NULL ); 
+	   fprintf( stderr, "%s %s%s   value: %f\n", preface, path, name, attr_double_val[0] );
+	 } else if (i == 2) {
+	   ret = H5Aread_ff( attr_id,  H5T_NATIVE_LONG, attr_long_val, rc_id, H5_EVENT_STACK_NULL ); 
+	   fprintf( stderr, "%s %s%s   value: %ld\n", preface, path, name, attr_long_val[0] );
+	 }
+
+         ret = H5Aclose_ff( attr_id, H5_EVENT_STACK_NULL ); 
+      }
+   }
+
+//    /* Datasets */
+//    for ( i = 1; i < 4; i++ ) {
+//       if ( i == 1 ) { 
+//          strcpy( name, "DA" );
+//       } else if ( i == 2 ){ 
+//          strcpy( name, "DB" ); 
+//       } else {
+//          strcpy( name, "DC" );
+//       }
+
+//       sprintf( path_to_object, "%s%s", grp_path, name );
+//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
+
+//       if ( exists ) { 
+//          hid_t dset_id;
+//          hid_t space_id;
+//          int nDims;
+//          hsize_t current_size[2];
+//          hsize_t max_size[2];
+//          hsize_t totalSize;
+//          int *data;              
+//          int i;
+
+//          dset_id = H5Dopen_ff( file_id, path_to_object, H5P_DEFAULT, rc_id, H5_EVENT_STACK_NULL ); 
+//          assert( dset_id >= 0 );
+
+//          space_id = H5Dget_space( dset_id ); assert ( space_id >= 0 );
+//          nDims = H5Sget_simple_extent_dims( space_id, current_size, max_size ); 
+//          assert( ( nDims == 1 ) || ( nDims == 2 ) );
+
+//          if ( nDims == 1 ) {
+//             totalSize = current_size[0];
+//          } else {
+//             totalSize = current_size[0] * current_size[1];
+//          }
+//          data = (int *)calloc( totalSize, sizeof(int) ); assert( data != NULL );
+
+//          ret = H5Dread_ff( dset_id, H5T_NATIVE_INT, space_id, space_id, H5P_DEFAULT, data, rc_id, H5_EVENT_STACK_NULL ); 
+
+//          sprintf( line, "%s %s values: ", preface, path_to_object );
+//          if ( nDims == 1 ) {
+//             for ( i = 0; i < totalSize; i++ ) {
+//                sprintf( line, "%s%d ", line, data[i] );
+//             }
+//          } else {
+//             int r, c;
+//             i = 0;
+//             for ( r = 0; r < current_size[0]; r++ ) {
+//                sprintf( line, "%srow %d: ", line, r );
+//                for ( c = 0; c < current_size[1]; c++ ) {
+//                   sprintf( line, "%s%d ", line, data[i] );
+//                   i++;
+//                }
+//             }
+//          }
+                  
+//          fprintf( stderr, "%s\n", line );
+//          free( data );
+
+//          ret = H5Dclose_ff( dset_id, H5_EVENT_STACK_NULL ); 
+//          ret = H5Sclose( space_id ); 
+//       } 
+//    }
+
+//    /* Committed datatypes */
+//    for ( i = 1; i < 3; i++ ) {
+//       if ( i == 1 ) { 
+//          strcpy( name, "TA" );
+//       } else { 
+//          strcpy( name, "TB" ); 
+//       }
+
+//       sprintf( path_to_object, "%s%s", grp_path, name );
+//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
+//       if ( exists ) { 
+//          fprintf( stderr, "%s %s\n", preface, path_to_object );
+//       } 
+//    }
+
+//    /* Groups - if found, descend */
+//    for ( i = 1; i < 3; i++ ) {
+//       if ( i == 1 ) { 
+//          strcpy( name, "GA" );
+//       } else { 
+//          strcpy( name, "GB" ); 
+//       }
+
+//       sprintf( path_to_object, "%s%s/", grp_path, name );
+//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
+//       if ( exists ) { 
+//          fprintf( stderr, "%s %s\n", preface, path_to_object );
+//          lvl++;
+//          print_container_contents( file_id, rc_id, path_to_object, my_rank );
+//          lvl--;
+//       } 
+//    }
+
+   /* End printing */
+   if ( lvl == 0 ) {
+      fprintf( stderr, "%s -----------------\n", preface );
+   }
+
+   return;
 }
