@@ -66,6 +66,7 @@ const bool CRUX_TIMING = true;
 bool do_crux_timing = false;
 
 bool h5_spoutput;
+int verbose_io = 0;        // Verbose (print CV contents between every transaction) defaults to no
 
 #define RESTORE_NONE     0
 #define RESTORE_RESTART  1
@@ -108,8 +109,14 @@ int rollback_attempt = 0;
 
 char backup_file[60];
 
+#ifdef HDF5_FF
 void
-print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int my_rank );
+print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank );
+#else
+void
+print_container_contents( hid_t file_id, int my_rank );
+#endif
+
 
 
 Crux::Crux(int crux_type_in, int num_of_rollback_states_in, bool restart)
@@ -245,20 +252,16 @@ void Crux::store_MallocPlus(MallocPlus memory){
           filetype = H5T_NATIVE_INT;
         } else {
           memtype = H5T_NATIVE_DOUBLE;
-
-
-// 	  if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ) {
-// 	    filetype = H5T_NATIVE_LONG;
-// 	    memtype = H5T_NATIVE_LONG;
-// 	  }
-
-          if(h5_spoutput) {
+ 	  if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ) {
+ 	    filetype = H5T_NATIVE_LONG;
+ 	    memtype = H5T_NATIVE_LONG;
+	  } else if(h5_spoutput) {
             filetype = H5T_NATIVE_FLOAT;
           } else {
             filetype = H5T_NATIVE_DOUBLE;
           }
-        }
-        
+	}
+
         hid_t gid;
         if( (strstr(memory_item->mem_name,"mesh") !=NULL) ||
             (strncmp(memory_item->mem_name,"i",1) == 0) || 
@@ -924,7 +927,7 @@ void Crux::store_end(void)
 
    checkpoint_counter++;
 
-#if 1
+#ifdef HDF5_FF
 
    // Now, reopen file and show contents of all available CVs
 
@@ -966,7 +969,7 @@ void Crux::store_end(void)
 	 rc_id = H5RCcreate( file_id, version ); 
        }
        assert ( version == v );
-       print_container_contents(file_id, rc_id, "/", mype );
+       print_container_contents_ff(file_id, rc_id, mype );
 
        MPI_Barrier( MPI_COMM_WORLD );
        if(v < last_version) {
@@ -985,6 +988,28 @@ void Crux::store_end(void)
    /* Close 2 H5 Objects that are still open */
    fprintf( stderr, "r%d: close all h5 objects that are still open\n", mype );
    H5Fclose_ff( file_id, 1, H5_EVENT_STACK_NULL );
+   H5Pclose( fapl_id );
+
+#else
+   // Now, reopen file and show contents of all available CVs
+
+   hid_t file_id, fapl_id;
+
+   /* Reopen the file Read/Write */
+   fprintf( stderr, "%d: open the container\n", mype );
+
+   fapl_id = H5Pcreate( H5P_FILE_ACCESS );
+   H5Pset_fapl_mpio(fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL);
+
+   /* Get latest CV on open */
+   file_id = H5Fopen(backup_file, H5F_ACC_RDONLY, fapl_id); 
+
+   print_container_contents(file_id, mype );
+
+   MPI_Barrier( MPI_COMM_WORLD );
+
+   /* Close 2 H5 Objects that are still open */
+   H5Fclose( file_id );
    H5Pclose( fapl_id );
 
 #endif
@@ -1180,11 +1205,11 @@ int Crux::get_rollback_number()
  * Helper function used to recursively print container contents
  * for container identified by "file_id" 
  * in read context identified by "rc_id"
- * with path to current level in "grp_path"
  * and "my_rank" used to identify the process doing the reading / printing.
  */
+#ifdef HDF5_FF
 void
-print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int my_rank )
+print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank )
 {
    herr_t ret;
    uint64_t cv;
@@ -1198,14 +1223,14 @@ print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int 
    char preface[128];    
    char line[1024];
    char path[128];
-   long attr_long_val[1];
+   int attr_long_val[1];
    double attr_double_val[1];
 
    /* Get the container version for the read context */
    ret = H5RCget_version( rc_id, &cv ); 
 
    /* Set up the preface and adding version number */
-   sprintf( preface, "M6.2-r%d: cv %d: ", my_rank, (int)cv );
+   sprintf( preface, "r%d: cv %d: ", my_rank, (int)cv );
 
    /* Start the printing */
    if ( lvl == 0 ) {
@@ -1228,113 +1253,114 @@ print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int 
 	assert( attr_id >= 0 );
    
 	 if(i == 1) {
-	   ret = H5Aread_ff( attr_id,  H5T_IEEE_F64LE, attr_double_val, rc_id, H5_EVENT_STACK_NULL ); 
+	   ret = H5Aread_ff( attr_id,  H5T_NATIVE_DOUBLE, attr_double_val, rc_id, H5_EVENT_STACK_NULL ); 
 	   fprintf( stderr, "%s %s%s   value: %f\n", preface, path, name, attr_double_val[0] );
 	 } else if (i == 2) {
 	   ret = H5Aread_ff( attr_id,  H5T_NATIVE_LONG, attr_long_val, rc_id, H5_EVENT_STACK_NULL ); 
 	   fprintf( stderr, "%s %s%s   value: %ld\n", preface, path, name, attr_long_val[0] );
 	 }
 
-         ret = H5Aclose_ff( attr_id, H5_EVENT_STACK_NULL ); 
+         ret = H5Aclose_ff( attr_id, H5_EVENT_STACK_NULL );
       }
    }
 
-//    /* Datasets */
-//    for ( i = 1; i < 4; i++ ) {
-//       if ( i == 1 ) { 
-//          strcpy( name, "DA" );
-//       } else if ( i == 2 ){ 
-//          strcpy( name, "DB" ); 
-//       } else {
-//          strcpy( name, "DC" );
-//       }
+   hid_t dtype;
+   /* Datasets */
+   for ( i = 1; i < 7; i++ ) {
+      if ( i == 1 ) { 
+         strcpy( name, "i" );
+         strcpy( path, "/mesh/" );
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 2 ){ 
+         strcpy( name, "j" );
+         strcpy( path, "/mesh/" ); 
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 3 ){
+         strcpy( name, "level" );
+         strcpy( path, "/mesh/" );
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 4 ){
+         strcpy( name, "H" );
+         strcpy( path, "/state/" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      } else if ( i == 5 ){
+         strcpy( path, "/state/" );
+         strcpy( name, "U" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      } else if ( i == 6 ){
+         strcpy( path, "/state/" );
+         strcpy( name, "V" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      }
 
-//       sprintf( path_to_object, "%s%s", grp_path, name );
-//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
+      sprintf( path_to_object, "%s%s", path, name );
+      ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
 
-//       if ( exists ) { 
-//          hid_t dset_id;
-//          hid_t space_id;
-//          int nDims;
-//          hsize_t current_size[2];
-//          hsize_t max_size[2];
-//          hsize_t totalSize;
-//          int *data;              
-//          int i;
+      if ( exists ) { 
+         hid_t dset_id;
+         hid_t space_id;
+         int nDims;
+         hsize_t current_size[2];
+         hsize_t totalSize;
+         int *data_int;     
+         double *data_double;              
+         int k;
 
-//          dset_id = H5Dopen_ff( file_id, path_to_object, H5P_DEFAULT, rc_id, H5_EVENT_STACK_NULL ); 
-//          assert( dset_id >= 0 );
+         dset_id = H5Dopen_ff( file_id, path_to_object, H5P_DEFAULT, rc_id, H5_EVENT_STACK_NULL ); 
+         assert( dset_id >= 0 );
 
-//          space_id = H5Dget_space( dset_id ); assert ( space_id >= 0 );
-//          nDims = H5Sget_simple_extent_dims( space_id, current_size, max_size ); 
-//          assert( ( nDims == 1 ) || ( nDims == 2 ) );
+         space_id = H5Dget_space( dset_id ); assert ( space_id >= 0 );
+         nDims = H5Sget_simple_extent_dims( space_id, current_size, NULL ); 
+         assert( ( nDims == 1 ) || ( nDims == 2 ) );
 
-//          if ( nDims == 1 ) {
-//             totalSize = current_size[0];
-//          } else {
-//             totalSize = current_size[0] * current_size[1];
-//          }
-//          data = (int *)calloc( totalSize, sizeof(int) ); assert( data != NULL );
+         if ( nDims == 1 ) {
+            totalSize = current_size[0];
+         } else {
+            totalSize = current_size[0] * current_size[1];
+         }
 
-//          ret = H5Dread_ff( dset_id, H5T_NATIVE_INT, space_id, space_id, H5P_DEFAULT, data, rc_id, H5_EVENT_STACK_NULL ); 
-
-//          sprintf( line, "%s %s values: ", preface, path_to_object );
-//          if ( nDims == 1 ) {
-//             for ( i = 0; i < totalSize; i++ ) {
-//                sprintf( line, "%s%d ", line, data[i] );
-//             }
-//          } else {
-//             int r, c;
-//             i = 0;
-//             for ( r = 0; r < current_size[0]; r++ ) {
-//                sprintf( line, "%srow %d: ", line, r );
-//                for ( c = 0; c < current_size[1]; c++ ) {
-//                   sprintf( line, "%s%d ", line, data[i] );
-//                   i++;
-//                }
-//             }
-//          }
-                  
-//          fprintf( stderr, "%s\n", line );
-//          free( data );
-
-//          ret = H5Dclose_ff( dset_id, H5_EVENT_STACK_NULL ); 
-//          ret = H5Sclose( space_id ); 
-//       } 
-//    }
-
-//    /* Committed datatypes */
-//    for ( i = 1; i < 3; i++ ) {
-//       if ( i == 1 ) { 
-//          strcpy( name, "TA" );
-//       } else { 
-//          strcpy( name, "TB" ); 
-//       }
-
-//       sprintf( path_to_object, "%s%s", grp_path, name );
-//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
-//       if ( exists ) { 
-//          fprintf( stderr, "%s %s\n", preface, path_to_object );
-//       } 
-//    }
-
-//    /* Groups - if found, descend */
-//    for ( i = 1; i < 3; i++ ) {
-//       if ( i == 1 ) { 
-//          strcpy( name, "GA" );
-//       } else { 
-//          strcpy( name, "GB" ); 
-//       }
-
-//       sprintf( path_to_object, "%s%s/", grp_path, name );
-//       ret = H5Lexists_ff( file_id, path_to_object, H5P_DEFAULT, &exists, rc_id, H5_EVENT_STACK_NULL );
-//       if ( exists ) { 
-//          fprintf( stderr, "%s %s\n", preface, path_to_object );
-//          lvl++;
-//          print_container_contents( file_id, rc_id, path_to_object, my_rank );
-//          lvl--;
-//       } 
-//    }
+	 printf("r%d: object : %s \n", my_rank, path_to_object);
+	 if (i < 4) {
+	   data_int = (int *)calloc( totalSize, sizeof(int) ); assert( data_int != NULL );
+	   ret = H5Dread_ff( dset_id, dtype, space_id, space_id, H5P_DEFAULT, data_int, rc_id, H5_EVENT_STACK_NULL );
+	   if ( nDims == 1 ) {
+	     for ( k = 0; k < totalSize; k++ ) {
+               if(verbose_io) printf( "%d ", data_int[k] );
+	     }
+	   } else {
+	     int r, c;
+	     k = 0;
+	     for ( r = 0; r < current_size[0]; r++ ) {
+               for ( c = 0; c < current_size[1]; c++ ) {
+		 if(verbose_io) printf( "%d ", data_int[k] );
+		 k++;
+               }
+	     }
+	   }
+	   free( data_int );
+	 } else {
+	   data_double = (double *)calloc( totalSize, sizeof(double) ); assert( data_double != NULL );
+	   ret = H5Dread_ff( dset_id, dtype, space_id, space_id, H5P_DEFAULT, data_double, rc_id, H5_EVENT_STACK_NULL );
+	   if ( nDims == 1 ) {
+	     for ( k = 0; k < totalSize; k++ ) {
+               if(verbose_io) printf( "%f ", data_double[k] );
+	     }
+	   } else {
+	     int r, c;
+	     k = 0;
+	     for ( r = 0; r < current_size[0]; r++ ) {
+               for ( c = 0; c < current_size[1]; c++ ) {
+		 if(verbose_io) printf( "%f ", data_double[k] );
+		 k++;
+               }
+	     }
+	   }
+	   free( data_double );
+	 }
+         ret = H5Dclose_ff( dset_id, H5_EVENT_STACK_NULL ); 
+         ret = H5Sclose( space_id ); 
+      } 
+   }
 
    /* End printing */
    if ( lvl == 0 ) {
@@ -1343,3 +1369,164 @@ print_container_contents( hid_t file_id, hid_t rc_id, const char* grp_path, int 
 
    return;
 }
+#else
+void
+print_container_contents( hid_t file_id, int my_rank )
+{
+   herr_t ret;
+   uint64_t cv;
+   htri_t exists;
+   char path_to_object[1024];
+   hid_t obj_id;
+   char name[3];
+   int i;
+
+   static int lvl = 0;     /* level in recursion - used to format printing */
+   char preface[128];    
+   char line[1024];
+   char path[128];
+   int attr_long_val[1];
+   double attr_double_val[1];
+
+   /* Set up the preface and adding version number */
+   sprintf( preface, "r%d: : ", my_rank );
+
+   /* Start the printing */
+   if ( lvl == 0 ) {
+      fprintf( stderr, "%s ----- Container Contents ------------\n", preface );
+   } 
+
+   /* Attributes */
+   for ( i = 1; i < 3; i++ ) {
+      if ( i == 1 ) {
+	strcpy(path, "/mesh/");
+	strcpy(name, "mesh_double_vals" );
+      } else if (i == 2) {
+	strcpy(path, "/state/");
+	strcpy(name, "state_long_vals" );
+      } 
+      if (  H5Aexists_by_name( file_id, path, name, H5P_DEFAULT) != 0 ) { 
+	hid_t attr_id;
+	attr_id = H5Aopen_by_name( file_id, path, name, H5P_DEFAULT, H5P_DEFAULT); 
+	assert( attr_id >= 0 );
+   
+	 if(i == 1) {
+	   ret = H5Aread( attr_id,  H5T_NATIVE_DOUBLE, attr_double_val); 
+	   fprintf( stderr, "%s %s%s   value: %f\n", preface, path, name, attr_double_val[0] );
+	 } else if (i == 2) {
+	   ret = H5Aread( attr_id,  H5T_NATIVE_LONG, attr_long_val); 
+	   fprintf( stderr, "%s %s%s   value: %ld\n", preface, path, name, attr_long_val[0] );
+	 }
+
+         ret = H5Aclose( attr_id); 
+      }
+   }
+
+   hid_t dtype;
+   /* Datasets */
+   for ( i = 1; i < 7; i++ ) {
+      if ( i == 1 ) { 
+         strcpy( name, "i" );
+         strcpy( path, "/mesh/" );
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 2 ){ 
+         strcpy( name, "j" );
+         strcpy( path, "/mesh/" ); 
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 3 ){
+         strcpy( name, "level" );
+         strcpy( path, "/mesh/" );
+	 dtype = H5T_NATIVE_INT;
+      } else if ( i == 4 ){
+         strcpy( name, "H" );
+         strcpy( path, "/state/" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      } else if ( i == 5 ){
+         strcpy( path, "/state/" );
+         strcpy( name, "U" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      } else if ( i == 6 ){
+         strcpy( path, "/state/" );
+         strcpy( name, "V" );
+	 dtype = H5T_NATIVE_DOUBLE;
+      }
+
+      sprintf( path_to_object, "%s%s", path, name );
+ 
+      if ( H5Lexists( file_id, path_to_object, H5P_DEFAULT) != 0 ) {
+
+	hid_t dset_id;
+	hid_t space_id;
+	int nDims;
+	hsize_t current_size[2];
+	hsize_t totalSize;
+	int *data_int;     
+	double *data_double;              
+	int k;
+
+         dset_id = H5Dopen( file_id, path_to_object, H5P_DEFAULT ); 
+         assert( dset_id >= 0 );
+
+         space_id = H5Dget_space( dset_id ); assert ( space_id >= 0 );
+         nDims = H5Sget_simple_extent_dims( space_id, current_size, NULL ); 
+         assert( ( nDims == 1 ) || ( nDims == 2 ) );
+
+         if ( nDims == 1 ) {
+            totalSize = current_size[0];
+         } else {
+            totalSize = current_size[0] * current_size[1];
+         }
+
+	 printf("r%d: object : %s \n", my_rank, path_to_object);
+	 if (i < 4) {
+	   data_int = (int *)calloc( totalSize, sizeof(int) ); assert( data_int != NULL );
+	   ret = H5Dread( dset_id, dtype, space_id, space_id, H5P_DEFAULT, data_int);
+ 	   if ( nDims == 1 ) {
+ 	     for ( k = 0; k < totalSize; k++ ) {
+	       if(verbose_io) printf( "%d ", data_int[k] );
+ 	     }
+	   } else {
+	     int r, c;
+	     k = 0;
+	     for ( r = 0; r < current_size[0]; r++ ) {
+               for ( c = 0; c < current_size[1]; c++ ) {
+		 if(verbose_io) printf( "%d ", data_int[k] );
+		 k++;
+               }
+	     }
+	   free( data_int );
+	   }
+	 } else {
+	   data_double = (double *)calloc( totalSize, sizeof(double) ); assert( data_double != NULL );
+	   ret = H5Dread( dset_id, dtype, space_id, space_id, H5P_DEFAULT, data_double);
+	   if ( nDims == 1 ) {
+	     for ( k = 0; k < totalSize; k++ ) {
+               if(verbose_io) printf( "%f ", data_double[k] );
+	     }
+	   } else {
+	     int r, c;
+	     k = 0;
+	     for ( r = 0; r < current_size[0]; r++ ) {
+               for ( c = 0; c < current_size[1]; c++ ) {
+		 if(verbose_io) printf( "%f ", data_double[k] );
+		 k++;
+               }
+	     }
+	   }
+	   free( data_double );
+	 }
+    
+         ret = H5Dclose( dset_id );
+         ret = H5Sclose( space_id ); 
+      } 
+   }
+
+   /* End printing */
+   if ( lvl == 0 ) {
+      fprintf( stderr, "%s -----------------\n", preface );
+   }
+
+   return;
+}
+
+#endif
