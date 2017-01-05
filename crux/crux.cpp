@@ -106,6 +106,8 @@ int checkpoint_timing_count = 0;
 float checkpoint_timing_sum = 0.0f;
 float checkpoint_timing_size = 0.0f;
 int rollback_attempt = 0;
+static int mype = 0;
+static int npes = 1;
 
 char backup_file[60];
 
@@ -121,6 +123,11 @@ print_container_contents( hid_t file_id, int my_rank );
 
 Crux::Crux(int crux_type_in, int num_of_rollback_states_in, bool restart)
 {
+#ifdef HAVE_MPI
+   MPI_Comm_rank(MPI_COMM_WORLD,&mype);
+   MPI_Comm_size(MPI_COMM_WORLD,&npes);
+#endif
+
    num_of_rollback_states = num_of_rollback_states_in;
    crux_type = crux_type_in;
    checkpoint_counter = 0;
@@ -500,8 +507,13 @@ void Crux::store_MallocPlus(MallocPlus memory){
       if(H5Pclose(plist_id) < 0)
 	printf("HDF5: Could not close property list \n");
 #endif
-      }
 #endif
+      store_field_header(memory_item->mem_name,30);
+      if (memory_item->mem_elsize == 4){
+         store_int_array((int *)mem_ptr, num_elements);
+      } else {
+         store_double_array((double *)mem_ptr, num_elements);
+      }
 //       store_field_header(memory_item->mem_name,20);
 //       if (memory_item->mem_elsize == 4){
 //          store_int_array((int *)mem_ptr, num_elements);
@@ -1019,7 +1031,7 @@ void Crux::store_end(void)
 int restore_type = RESTORE_NONE;
 
 void Crux::restore_MallocPlus(MallocPlus memory){
-   char test_name[24];
+   char test_name[34];
    malloc_plus_memory_entry *memory_item;
    for (memory_item = memory.memory_entry_by_name_begin(); 
       memory_item != memory.memory_entry_by_name_end();
@@ -1029,7 +1041,7 @@ void Crux::restore_MallocPlus(MallocPlus memory){
       if ((memory_item->mem_flags & RESTART_DATA) == 0) continue;
 
       int num_elements = 1;
-      for (uint i = 1; i < memory_item->mem_ndims; i++){
+      for (uint i = 0; i < memory_item->mem_ndims; i++){
 	 num_elements *= memory_item->mem_nelem[i];
       }
 
@@ -1049,7 +1061,7 @@ void Crux::restore_MallocPlus(MallocPlus memory){
            memory_item->mem_elsize,memory_item->mem_flags,memory_item->mem_capacity);
       }
 
-      restore_field_header(test_name,20);
+      restore_field_header(test_name,30);
       if (strcmp(test_name,memory_item->mem_name) != 0) {
          printf("ERROR in restore checkpoint for %s %s\n",test_name,memory_item->mem_name);
       }
@@ -1069,9 +1081,11 @@ void Crux::restore_begin(char *restart_file, int rollback_counter)
    cpu_timer_start(&trestore_time);
 
    if (restart_file != NULL){
-      printf("\n  ================================================================\n");
-      printf(  "  Restoring state from disk file %s\n",restart_file);
-      printf(  "  ================================================================\n\n");
+      if (mype == 0) {
+         printf("\n  ================================================================\n");
+         printf(  "  Restoring state from disk file %s\n",restart_file);
+         printf(  "  ================================================================\n\n");
+      }
       restore_fp = fopen(restart_file,"r");
       if(!restore_fp){
          //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
