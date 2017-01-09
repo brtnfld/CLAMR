@@ -75,6 +75,7 @@ int verbose_io = 0;        // Verbose (print CV contents between every transacti
 #ifndef DEBUG
 #define DEBUG 0
 #endif
+#undef DEBUG_RESTORE_VALS
 
 using namespace std;
 using PP::PowerParser;
@@ -82,7 +83,6 @@ using PP::PowerParser;
 PowerParser *parse;
 
 char checkpoint_directory[] = "checkpoint_output";
-FILE *store_fp, *restore_fp;
 int cp_num, rs_num;
 int *backup;
 void **crux_data;
@@ -106,8 +106,11 @@ int checkpoint_timing_count = 0;
 float checkpoint_timing_sum = 0.0f;
 float checkpoint_timing_size = 0.0f;
 int rollback_attempt = 0;
+FILE *store_fp, *restore_fp;
+#ifdef HAVE_MPI
+static MPI_File mpi_store_fp, mpi_restore_fp;
+#endif
 static int mype = 0;
-static int npes = 1;
 
 char backup_file[60];
 
@@ -125,7 +128,6 @@ Crux::Crux(int crux_type_in, int num_of_rollback_states_in, bool restart)
 {
 #ifdef HAVE_MPI
    MPI_Comm_rank(MPI_COMM_WORLD,&mype);
-   MPI_Comm_size(MPI_COMM_WORLD,&npes);
 #endif
 
    num_of_rollback_states = num_of_rollback_states_in;
@@ -205,7 +207,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
       if ((memory_item->mem_flags & RESTART_DATA) == 0) continue;
 
       int num_elements = 1;
-      for (uint i = 1; i < memory_item->mem_ndims; i++){
+      for (uint i = 0; i < memory_item->mem_ndims; i++){
 	 num_elements *= memory_item->mem_nelem[i];
 	
       }
@@ -509,10 +511,18 @@ void Crux::store_MallocPlus(MallocPlus memory){
 #endif
 #endif
       store_field_header(memory_item->mem_name,30);
-      if (memory_item->mem_elsize == 4){
-         store_int_array((int *)mem_ptr, num_elements);
+      if (memory_item->mem_flags & REPLICATED_DATA) { 
+         if (memory_item->mem_elsize == 4){
+            store_replicated_int_array((int *)mem_ptr, num_elements);
+         } else {
+            store_replicated_double_array((double *)mem_ptr, num_elements);
+         }
       } else {
-         store_double_array((double *)mem_ptr, num_elements);
+         if (memory_item->mem_elsize == 4){
+            store_int_array((int *)mem_ptr, num_elements);
+         } else {
+            store_double_array((double *)mem_ptr, num_elements);
+         }
       }
 //       store_field_header(memory_item->mem_name,20);
 //       if (memory_item->mem_elsize == 4){
@@ -723,21 +733,34 @@ void Crux::store_begin(size_t nsize, int ncycle)
 
 #endif
 
+      sprintf(backup_file,"%s/backup%05d.crx",checkpoint_directory,ncycle);
 #ifndef HDF5_FF
-//       sprintf(backup_file,"backup%05d.crx",ncycle);
-//       store_fp = fopen(backup_file,"w");
-//       if(!store_fp){
-//          printf("Could not write %s at iteration %d\n",backup_file,ncycle);
-//       }
+      if(!USE_HDF5) {
 
-//       char symlink_file[60];
-//       sprintf(symlink_file,"%s/backup%1d.crx",checkpoint_directory,cp_num);
-//       int ireturn = symlink(backup_file, symlink_file);
-//    if (ireturn == -1) {
-//       printf("Warning: error returned with symlink call for file %s and symlink %s\n",
-//              backup_file,symlink_file);
-//    }
+# ifdef HAVE_MPI
+      int iret = MPI_File_open(MPI_COMM_WORLD, backup_file, MPI_MODE_CREATE|MPI_MODE_WRONLY, MPI_INFO_NULL, &mpi_store_fp);
+      if(iret != MPI_SUCCESS) {
+         printf("Could not write %s at iteration %d\n",backup_file,ncycle);
+      }
+# else
+      store_fp = fopen(backup_file,"w");
+      if(!store_fp){
+         printf("Could not write %s at iteration %d\n",backup_file,ncycle);
+      }
+# endif
+      }
+
 #endif
+      if (mype == 0) {
+        char symlink_file[60];
+        sprintf(symlink_file,"%s/backup%1d.crx",checkpoint_directory,cp_num);
+        symlink(backup_file, symlink_file);
+//      int ireturn = symlink(backup_file, symlink_file);
+//      if (ireturn == -1) {
+//         printf("Warning: error returned with symlink call for file %s and symlink %s\n",
+//                backup_file,symlink_file);
+//      }
+      }
    }
 
    if (do_crux_timing){
@@ -746,8 +769,20 @@ void Crux::store_begin(size_t nsize, int ncycle)
 }
 
 void Crux::store_field_header(const char *name, int name_size){
+#ifdef HAVE_MPI
+   assert(name != NULL);
+   MPI_Status status;
+   MPI_File_write_shared(mpi_store_fp, (void *)name, name_size, MPI_CHAR, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_CHAR, &count);
+   printf("Wrote %d characters at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
    assert(name != NULL && store_fp != NULL);
    fwrite(name,sizeof(char),name_size,store_fp);
+#endif
 }
 
 void Crux::store_bools(bool *bool_vals, size_t nelem)
@@ -782,8 +817,20 @@ void Crux::store_doubles(double *double_vals, size_t nelem)
 
 void Crux::store_int_array(int *int_array, size_t nelem)
 {
+#ifdef HAVE_MPI
+   assert(int_array != NULL);
+   MPI_Status status;
+   MPI_File_write_shared(mpi_store_fp, int_array, (int)nelem, MPI_INT, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_INT, &count);
+   printf("Wrote %d integers at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
    assert(int_array != NULL && store_fp != NULL);
    fwrite(int_array,sizeof(int),nelem,store_fp);
+#endif
 }
 
 void Crux::store_long_array(long long *long_array, size_t nelem)
@@ -800,18 +847,72 @@ void Crux::store_float_array(float *float_array, size_t nelem)
 
 void Crux::store_double_array(double *double_array, size_t nelem)
 {
+#ifdef HAVE_MPI
+   assert(double_array != NULL);
+   MPI_Status status;
+   MPI_File_write_shared(mpi_store_fp, double_array, (int)nelem, MPI_DOUBLE, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_DOUBLE, &count);
+   printf("Wrote %d doubles at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
    assert(double_array != NULL && store_fp != NULL);
    fwrite(double_array,sizeof(double),nelem,store_fp);
+#endif
+}
+
+void Crux::store_replicated_int_array(int *int_array, size_t nelem)
+{
+#ifdef HAVE_MPI
+   assert(int_array != NULL);
+   MPI_Status status;
+   MPI_File_write_shared(mpi_store_fp, int_array, (int)nelem, MPI_INT, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_INT, &count);
+   printf("Wrote %d integers at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
+   assert(int_array != NULL && store_fp != NULL);
+   fwrite(int_array,sizeof(int),nelem,store_fp);
+#endif
+}
+
+void Crux::store_replicated_double_array(double *double_array, size_t nelem)
+{
+#ifdef HAVE_MPI
+   assert(double_array != NULL);
+   MPI_Status status;
+   MPI_File_write_shared(mpi_store_fp, double_array, (int)nelem, MPI_DOUBLE, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_DOUBLE, &count);
+   printf("Wrote %d doubles at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
+   assert(double_array != NULL && store_fp != NULL);
+   fwrite(double_array,sizeof(double),nelem,store_fp);
+#endif
 }
 
 void Crux::store_end(void)
 {
+<<<<<<< HEAD
 //    assert(store_fp != NULL);
 //    fclose(store_fp);
 
 #ifdef HAVE_MPI
    int mype;
    MPI_Comm_rank (MPI_COMM_WORLD, &mype );
+   if(!USE_HDF5)
+     MPI_File_close(&mpi_store_fp);
+#else
+   assert(store_fp != NULL);
+   fclose(store_fp);
 #endif
 
 #ifdef HAVE_HDF5
@@ -1066,12 +1167,21 @@ void Crux::restore_MallocPlus(MallocPlus memory){
          printf("ERROR in restore checkpoint for %s %s\n",test_name,memory_item->mem_name);
       }
 
-      if (memory_item->mem_elsize == 4){
-         restore_int_array((int *)mem_ptr, num_elements);
+      if (memory_item->mem_flags & REPLICATED_DATA) { 
+         if (memory_item->mem_elsize == 4){
+            restore_replicated_int_array((int *)mem_ptr, num_elements);
+         } else {
+            restore_replicated_double_array((double *)mem_ptr, num_elements);
+         }
       } else {
-         restore_double_array((double *)mem_ptr, num_elements);
+         if (memory_item->mem_elsize == 4){
+            restore_int_array((int *)mem_ptr, num_elements);
+         } else {
+            restore_double_array((double *)mem_ptr, num_elements);
+         }
       }
    }
+
 }
 
 void Crux::restore_begin(char *restart_file, int rollback_counter)
@@ -1086,11 +1196,20 @@ void Crux::restore_begin(char *restart_file, int rollback_counter)
          printf(  "  Restoring state from disk file %s\n",restart_file);
          printf(  "  ================================================================\n\n");
       }
+#ifdef HAVE_MPI
+      int iret = MPI_File_open(MPI_COMM_WORLD, restart_file, MPI_MODE_RDONLY | MPI_MODE_UNIQUE_OPEN, MPI_INFO_NULL, &mpi_restore_fp);
+      if(iret != MPI_SUCCESS){
+         //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
+         printf("Could not open restart file %s\n",restart_file);
+      }
+
+#else
       restore_fp = fopen(restart_file,"r");
       if(!restore_fp){
          //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
          printf("Could not open restart file %s\n",restart_file);
       }
+#endif
       restore_type = RESTORE_RESTART;
    } else if(crux_type == CRUX_IN_MEMORY){
       printf("Restoring state from memory rollback number %d rollback_counter %d\n",rs_num,rollback_counter);
@@ -1111,10 +1230,22 @@ void Crux::restore_begin(char *restart_file, int rollback_counter)
 
 void Crux::restore_field_header(char *name, int name_size)
 {
+#ifdef HAVE_MPI
+   assert(name != NULL);
+   MPI_Status status;
+   MPI_File_read_shared(mpi_restore_fp, name, name_size, MPI_CHAR, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_CHAR, &count);
+   printf("Read %d characters at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
    int name_read = fread(name,sizeof(char),name_size,restore_fp);
    if (name_read != name_size){
       printf("Warning: number of elements read %d is not equal to request %d\n",name_read,name_size);
    }
+#endif
 }
 
 void Crux::restore_bools(bool *bool_vals, size_t nelem)
@@ -1159,10 +1290,22 @@ void Crux::restore_doubles(double *double_vals, size_t nelem)
 
 int *Crux::restore_int_array(int *int_array, size_t nelem)
 {
+#ifdef HAVE_MPI
+   assert(int_array != NULL);
+   MPI_Status status;
+   MPI_File_read_shared(mpi_restore_fp, int_array, (int)nelem, MPI_INT, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_INT, &count);
+   printf("Read %d integers at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
    size_t nelem_read = fread(int_array,sizeof(int),nelem,restore_fp);
    if (nelem_read != nelem){
       printf("Warning: number of elements read %lu is not equal to request %lu\n",nelem_read,nelem);
    }
+#endif
    return(int_array);
 }
 
@@ -1186,10 +1329,62 @@ float *Crux::restore_float_array(float *float_array, size_t nelem)
 
 double *Crux::restore_double_array(double *double_array, size_t nelem)
 {
+#ifdef HAVE_MPI
+   MPI_Status status;
+   MPI_File_read_shared(mpi_restore_fp, double_array, (int)nelem, MPI_DOUBLE, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_DOUBLE, &count);
+   printf("Read %d doubles at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+  
+#else
    size_t nelem_read = fread(double_array,sizeof(double),nelem,restore_fp);
    if (nelem_read != nelem){
       printf("Warning: number of elements read %lu is not equal to request %lu\n",nelem_read,nelem);
    }
+#endif
+   return(double_array);
+}
+
+int *Crux::restore_replicated_int_array(int *int_array, size_t nelem)
+{
+#ifdef HAVE_MPI
+   assert(int_array != NULL);
+   MPI_Status status;
+   MPI_File_read_shared(mpi_restore_fp, int_array, (int)nelem, MPI_INT, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_INT, &count);
+   printf("Read %d integers at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+
+#else
+   size_t nelem_read = fread(int_array,sizeof(int),nelem,restore_fp);
+   if (nelem_read != nelem){
+      printf("Warning: number of elements read %lu is not equal to request %lu\n",nelem_read,nelem);
+   }
+#endif
+   return(int_array);
+}
+
+double *Crux::restore_replicated_double_array(double *double_array, size_t nelem)
+{
+#ifdef HAVE_MPI
+   MPI_Status status;
+   MPI_File_read_shared(mpi_restore_fp, double_array, (int)nelem, MPI_DOUBLE, &status);
+#ifdef DEBUG_RESTORE_VALS
+   int count;
+   MPI_Get_count(&status, MPI_DOUBLE, &count);
+   printf("Read %d doubles at line %d in file %s\n",count,__LINE__,__FILE__);
+#endif
+  
+#else
+   size_t nelem_read = fread(double_array,sizeof(double),nelem,restore_fp);
+   if (nelem_read != nelem){
+      printf("Warning: number of elements read %lu is not equal to request %lu\n",nelem_read,nelem);
+   }
+#endif
    return(double_array);
 }
 
@@ -1544,3 +1739,7 @@ print_container_contents( hid_t file_id, int my_rank )
 }
 
 #endif
+void Crux::set_crux_type(int crux_type_in)
+{
+  crux_type = crux_type_in;
+}
