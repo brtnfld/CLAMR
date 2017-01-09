@@ -244,6 +244,9 @@ void Crux::store_MallocPlus(MallocPlus memory){
       }
 
 #ifdef HAVE_HDF5
+      hid_t memspace, filespace;
+      hsize_t dims[2], start[2], count[2];
+
       if(USE_HDF5) {
         //
         // Create dataspace.  Setting maximum size to NULL sets the maximum
@@ -331,10 +334,8 @@ void Crux::store_MallocPlus(MallocPlus memory){
                    (strstr(memory_item->mem_name,"int_dist_vals") !=NULL)   ) {
           
           hid_t did;
-          hsize_t dims[2], start[2], count[2];
 	  hsize_t dims_glb[2];
           hid_t sid1;
-          hid_t memspace, filespace;
 
           dims[0] = npes;
           dims[1] = (hsize_t)memory_item->mem_nelem[0];
@@ -531,6 +532,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
 //          store_double_array((double *)mem_ptr, num_elements);
 //       }
    }
+}
 }
 
 void Crux::store_begin(size_t nsize, int ncycle)
