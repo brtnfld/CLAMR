@@ -89,6 +89,9 @@ public:
    void       restore_longs(long long *long_vals, size_t nelem);
    void       restore_sizets(size_t *size_t_vals, size_t nelem);
    void       restore_doubles(double *double_vals, size_t nelem);
+#ifdef HAVE_HDF5
+   void       restore_hdf5_values(void *vals, const char* dataset);
+#endif
    int       *restore_int_array(int *int_array, size_t nsize);
    long long *restore_long_array(long long *long_array, size_t nsize);
    float     *restore_float_array(float *float_array, size_t nsize);

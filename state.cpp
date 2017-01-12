@@ -3749,7 +3749,7 @@ size_t State::get_checkpoint_size(void)
 
 void State::store_checkpoint(Crux *crux)
 {
-#ifndef HAVE_MPI
+  // MSB #ifndef HAVE_MPI
    // Store mesh data first
    mesh->store_checkpoint(crux);
 
@@ -3768,12 +3768,13 @@ void State::store_checkpoint(Crux *crux)
    state_memory.memory_remove(int_vals);
    state_memory.memory_remove(cpu_timers);
    state_memory.memory_remove(gpu_timers);
-#endif
+   // MSB #endif
 }
 
 void State::restore_checkpoint(Crux *crux)
 {
-#ifndef HAVE_MPI
+  //MSB #ifndef HAVE_MPI
+  printf("State::restore_checkpoint \n");
    // Restore mesh data first
    mesh->restore_checkpoint(crux);
 
@@ -3827,7 +3828,7 @@ void State::restore_checkpoint(Crux *crux)
    state_memory.memory_remove(gpu_timers);
    
    memory_reset_ptrs();
-#endif
+   // MSB #endif
 }
 
 // Added overloaded print to get mesh information to print in each cycle

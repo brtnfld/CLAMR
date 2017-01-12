@@ -77,6 +77,7 @@
 #include "reduce.h"
 #include "genmalloc/genmalloc.h"
 #include "hash/hash.h"
+//bool USE_HDF5 = true; //MSB fix this make this global
 
 #define DEBUG 0
 //#define BOUNDS_CHECK 1
@@ -84,7 +85,8 @@
 #ifndef DEBUG
 #define DEBUG 0
 #endif
-#undef DEBUG_RESTORE_VALS
+#define DEBUG_RESTORE_VALS 1
+// #undef DEBUG_RESTORE_VALS // MSB
 
 typedef int scanInt;
 void scan ( scanInt *input , scanInt *output , scanInt length);
@@ -8783,6 +8785,7 @@ void Mesh::allocate(size_t ncells)
    i     = (int *)mesh_memory.memory_malloc(ncells, sizeof(int), "i",     flags);
    j     = (int *)mesh_memory.memory_malloc(ncells, sizeof(int), "j",     flags);
    level = (int *)mesh_memory.memory_malloc(ncells, sizeof(int), "level", flags);
+   dist = (int *)mesh_memory.memory_malloc(4, sizeof(int), "amesh_int_dist_vals", flags);
 }
 
 
@@ -10190,10 +10193,10 @@ void Mesh::store_checkpoint(Crux *crux)
 #endif
    //printf("noffset is %d\n",noffset);
 
-#ifndef HAVE_MPI
+   // MSB #ifndef HAVE_MPI
 
    // Need ncells for memory allocation
-   crux->store_sizets(&ncells, 1);
+   // MSB crux->store_sizets(&ncells, 1);
 
    // Write scalars to arrays for storing in checkpoint
    int int_vals[num_int_vals];
@@ -10209,16 +10212,21 @@ void Mesh::store_checkpoint(Crux *crux)
    int_dist_vals[ 2] = (int)ncells_ghost;
    int_dist_vals[ 3] = offtile_local_count;
 
+   
+
    double double_vals[num_double_vals];
 
    double_vals[0] = offtile_ratio_local;
 
    int flags = RESTART_DATA;
+   printf("ncells, nooffset %d %d \n", ncells_int, int_dist_vals[ 1]);
+   printf("crux_mesh_version, ndim %d %d \n", int_vals[ 0], int_vals[ 1]);
    // Now add memory entries to database for storing checkpoint
-   mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "mesh_int_dist_vals", flags);
+   mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "amesh_int_dist_vals", flags);
    flags = RESTART_DATA | REPLICATED_DATA;
    mesh_memory.memory_add(int_vals, (size_t)num_int_vals, 4, "mesh_int_vals", flags);
    mesh_memory.memory_add(double_vals, (size_t)num_double_vals, 8, "mesh_double_vals", flags);
+
 
    flags = RESTART_DATA;
    mesh_memory.memory_add(cpu_counters, (size_t)MESH_COUNTER_SIZE, 4, "mesh_cpu_counters", flags);
@@ -10238,7 +10246,7 @@ void Mesh::store_checkpoint(Crux *crux)
    mesh_memory.memory_remove(gpu_counters);
    mesh_memory.memory_remove(cpu_timers);
    mesh_memory.memory_remove(gpu_timers);
-#endif
+   // MSB #endif
 
 }
 
@@ -10246,9 +10254,21 @@ void Mesh::restore_checkpoint(Crux *crux)
 {
 #ifndef HAVE_MPI
    // Need ncells for memory allocation
-   crux->restore_sizets(&ncells, 1);
+//    printf("mesh:restore_checkpoint1 \n");
+
+//    if(!USE_HDF5) {
+//      crux->restore_sizets(&ncells, 1);
+//    }
+// #ifdef HAVE_HDF5
+//    else {
+//      crux->restore_hdf5_values(&ncells,"/mesh/mesh_double_vals");
+//      }
+// #endif
+
+//    printf("%l \n",ncells);
 
    // Create memory for reading data into
+   int *ptr;
    int int_dist_vals[num_int_dist_vals];
    int int_vals[num_int_vals];
    double double_vals[num_double_vals];
@@ -10265,13 +10285,17 @@ void Mesh::restore_checkpoint(Crux *crux)
    nbot = NULL;
    celltype = NULL;
 
+   printf("crux->restore_MallocPlus(mesh_memory)\n");
+
+   //not needed?   allocate(ncells);
+
    // Resize is a mesh method
    resize(ncells);
    memory_reset_ptrs();
    
    int flags = RESTART_DATA;
    // Now add memory entries to database for restoring checkpoint
-   mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "mesh_int_dist_vals", flags);
+   mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "amesh_int_dist_vals", flags);
    flags = RESTART_DATA | REPLICATED_DATA;
    mesh_memory.memory_add(int_vals, (size_t)num_int_vals, 4, "mesh_int_vals", flags);
    mesh_memory.memory_add(double_vals, (size_t)num_double_vals, 8, "mesh_double_vals", flags);
@@ -10295,10 +10319,27 @@ void Mesh::restore_checkpoint(Crux *crux)
    mesh_memory.memory_remove(cpu_timers);
    mesh_memory.memory_remove(gpu_timers);
 
+   crux->restore_MallocPlus(mesh_memory);
+
+
+   printf("111\n");
+   ptr = (int *)mesh_memory.get_memory_ptr("amesh_int_dist_vals");
+   printf("*(ptr + 0) : %d\n",  *(ptr + 0) );
+   printf("222\n");
+
+   // Copy out scalar values from array
+   ncells                    = *(ptr + 0);
+   printf("333\n");
+   noffset                   = *(ptr + 1);
+   ncells_ghost              = *(ptr + 2);
+   offtile_local_count       = *(ptr + 3);
+
+   ptr = (int *)mesh_memory.get_memory_ptr("mesh_int_vals");
+
    // Check version number
-   if (int_vals[ 0] != CRUX_MESH_VERSION) {
+   if (*(ptr + 0) != CRUX_MESH_VERSION) {
       printf("CRUX version mismatch for mesh data, version on file is %d, version in code is %d\n",
-         int_vals[0], CRUX_MESH_VERSION);
+         *(ptr + 0), CRUX_MESH_VERSION);
       exit(0);
    }
 
@@ -10309,8 +10350,8 @@ void Mesh::restore_checkpoint(Crux *crux)
    offtile_local_count       = int_dist_vals[ 3];
 
    // Copy out scalar values from array
-   ndim                      = int_vals[ 1];
-   levmx                     = int_vals[ 2];
+   ndim                      = *(ptr + 1);
+   levmx                     = *(ptr + 2);
 
 #ifdef DEBUG_RESTORE_VALS
    if (DEBUG_RESTORE_VALS && mype == 0) {

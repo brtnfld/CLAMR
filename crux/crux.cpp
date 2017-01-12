@@ -87,8 +87,9 @@ int cp_num, rs_num;
 int *backup;
 void **crux_data;
 size_t *crux_data_size;
+bool USE_HDF5 = true; //MSB fix thimake global
+
 #ifdef HAVE_HDF5
-bool USE_HDF5 = true; //MSB
 hid_t h5_fid;
 hid_t h5_gid_c, h5_gid_m, h5_gid_s;
 herr_t h5err;
@@ -110,9 +111,20 @@ FILE *store_fp, *restore_fp;
 #ifdef HAVE_MPI
 static MPI_File mpi_store_fp, mpi_restore_fp;
 #endif
-static int mype = 0;
+static int npes = 1;
 
 char backup_file[60];
+
+#ifdef HDF5_FF
+void
+print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank );
+#endif
+#ifdef HAVE_HDF5
+void
+print_container_contents( hid_t file_id, int my_rank );
+#endif
+static int mype = 0;
+
 
 #ifdef HDF5_FF
 void
@@ -199,262 +211,274 @@ void Crux::store_MallocPlus(MallocPlus memory){
   hid_t mem_space_id;
 #endif
 
-   for (memory_item = memory.memory_entry_by_name_begin(); 
+  for (memory_item = memory.memory_entry_by_name_begin(); 
       memory_item != memory.memory_entry_by_name_end();
       memory_item = memory.memory_entry_by_name_next() ){
 
       void *mem_ptr = memory_item->mem_ptr;
       if ((memory_item->mem_flags & RESTART_DATA) == 0) continue;
 
-      int num_elements = 1;
-      for (uint i = 0; i < memory_item->mem_ndims; i++){
-	 num_elements *= memory_item->mem_nelem[i];
-	
-      }
-
-      size_t numcells_glb;
-      MPI_Allreduce(&memory_item->mem_nelem[0], &numcells_glb, 1, MPI_UINT64_T, MPI_SUM,
-		    MPI_COMM_WORLD);
-
-      uint64_t *rncells; // All cell counts from each task
-
-      // Gather ncells on each processor
-      rncells = (uint64_t *) malloc(npes*sizeof(uint64_t));
-
-      MPI_Allgather(&memory_item->mem_nelem[0], 1, MPI_UNSIGNED_LONG_LONG, rncells, 1, MPI_LONG_LONG, MPI_COMM_WORLD);
-
-
-
-      //  printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
-
-      if (DEBUG) {
-        printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
-           mem_ptr,memory_item->mem_name,memory_item->mem_ptr,memory_item->mem_ndims);
-
-        char nelemstring[80];
-        char *str_ptr = nelemstring;
-        str_ptr += sprintf(str_ptr,"%lu", memory_item->mem_nelem[0]);
-        for (uint i = 1; i < memory_item->mem_ndims; i++){
-           str_ptr += sprintf(str_ptr,", %lu", memory_item->mem_nelem[i]);
-        }
-        printf("%12s",nelemstring);
-
-        printf(") elsize %lu flags %d capacity %lu\n",
-           memory_item->mem_elsize,memory_item->mem_flags,memory_item->mem_capacity);
-      }
-
-#ifdef HAVE_HDF5
-      hid_t memspace, filespace;
-      hsize_t dims[2], start[2], count[2];
-
-      if(USE_HDF5) {
-        //
-        // Create dataspace.  Setting maximum size to NULL sets the maximum
-        // size to be the current size.
-        //
-        
-        hid_t sid;
-        sid = H5Screate_simple (memory_item->mem_ndims, (hsize_t*)memory_item->mem_nelem, NULL);
-
-        
-        hid_t memtype;
-        hid_t filetype;
-        if (memory_item->mem_elsize == 4){
-          memtype = H5T_NATIVE_INT;
-          filetype = H5T_NATIVE_INT;
-        } else {
-          memtype = H5T_NATIVE_DOUBLE;
- 	  if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ) {
- 	    filetype = H5T_NATIVE_LONG;
- 	    memtype = H5T_NATIVE_LONG;
-	  } else if(h5_spoutput) {
-            filetype = H5T_NATIVE_FLOAT;
-          } else {
-            filetype = H5T_NATIVE_DOUBLE;
-          }
-	}
-
-        hid_t gid;
-        if( (strstr(memory_item->mem_name,"mesh") !=NULL) ||
-            (strncmp(memory_item->mem_name,"i",1) == 0) || 
-            (strncmp(memory_item->mem_name,"j",1) == 0) || 
-            (strncmp(memory_item->mem_name,"level",5) == 0) ) {
-          gid = h5_gid_m;
-        }
-        else if( (strstr(memory_item->mem_name,"state") != NULL) || 
-                 (strncmp(memory_item->mem_name,"H",1) == 0) ||
-                 (strncmp(memory_item->mem_name,"U",1) == 0) ||
-                 (strncmp(memory_item->mem_name,"V",1) == 0) ) {
-          gid = h5_gid_s; 
-        }
-        else {
-          gid = h5_gid_c;
-        }
-
-        hid_t plist_id;
-        plist_id = H5P_DEFAULT;
 #ifdef HAVE_MPI
+      MPI_Comm_rank(MPI_COMM_WORLD,&mype);
+      MPI_Comm_size(MPI_COMM_WORLD,&npes);
+#endif
+
+#if HDF5_FF
+      H5ES_status_t status;
+      size_t num_events = 0;
+      MPI_Request mpi_req;
+      herr_t ret;
+      uint64_t trans_num;
+      hid_t mem_space_id;
+#endif
+
+    int num_elements = 1;
+    for (uint i = 0; i < memory_item->mem_ndims; i++){
+      num_elements *= memory_item->mem_nelem[i];
+    }
+
+    size_t numcells_glb;
+    MPI_Allreduce(&memory_item->mem_nelem[0], &numcells_glb, 1, MPI_UINT64_T, MPI_SUM,
+		  MPI_COMM_WORLD);
+    
+    uint64_t *rncells; // All cell counts from each task
+    
+    // Gather ncells on each processor
+    rncells = (uint64_t *) malloc(npes*sizeof(uint64_t));
+
+    MPI_Allgather(&memory_item->mem_nelem[0], 1, MPI_UNSIGNED_LONG_LONG, rncells, 1, MPI_LONG_LONG, MPI_COMM_WORLD);
+
+    printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
+
+    if (DEBUG) {
+      printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
+	     mem_ptr,memory_item->mem_name,memory_item->mem_ptr,memory_item->mem_ndims);
+      
+      char nelemstring[80];
+      char *str_ptr = nelemstring;
+      str_ptr += sprintf(str_ptr,"%lu", memory_item->mem_nelem[0]);
+      for (uint i = 1; i < memory_item->mem_ndims; i++){
+	str_ptr += sprintf(str_ptr,", %lu", memory_item->mem_nelem[i]);
+      }
+      printf("%12s",nelemstring);
+      
+      printf(") elsize %lu flags %d capacity %lu\n",
+	     memory_item->mem_elsize,memory_item->mem_flags,memory_item->mem_capacity);
+    }
+ 
+#ifdef HAVE_HDF5
+    hid_t memspace, filespace;
+    hsize_t dims[2], start[2], count[2];
+
+     if(USE_HDF5) {
+      //
+      // Create dataspace.  Setting maximum size to NULL sets the maximum
+      // size to be the current size.
+      //
+      
+      hid_t sid;
+      sid = H5Screate_simple (memory_item->mem_ndims, (hsize_t*)memory_item->mem_nelem, NULL);
+        
+      hid_t memtype;
+      hid_t filetype;
+      if (memory_item->mem_elsize == 4){
+	memtype = H5T_NATIVE_INT;
+	filetype = H5T_NATIVE_INT;
+      } else {
+	memtype = H5T_NATIVE_DOUBLE;
+	if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ) {
+	  filetype = H5T_NATIVE_LONG;
+	  memtype = H5T_NATIVE_LONG;
+	} else if(h5_spoutput) {
+	  filetype = H5T_NATIVE_FLOAT;
+	} else {
+	  filetype = H5T_NATIVE_DOUBLE;
+	}
+      }
+
+      hid_t gid;
+      if( (strstr(memory_item->mem_name,"mesh") !=NULL) ||
+	  (strncmp(memory_item->mem_name,"i",1) == 0) || 
+	  (strncmp(memory_item->mem_name,"j",1) == 0) || 
+	  (strncmp(memory_item->mem_name,"level",5) == 0) ) {
+	gid = h5_gid_m;
+      }
+      else if( (strstr(memory_item->mem_name,"state") != NULL) || 
+	       (strncmp(memory_item->mem_name,"H",1) == 0) ||
+	       (strncmp(memory_item->mem_name,"U",1) == 0) ||
+	       (strncmp(memory_item->mem_name,"V",1) == 0) ) {
+	gid = h5_gid_s; 
+      }
+      else {
+	gid = h5_gid_c;
+      }
+
+      hid_t plist_id;
+      plist_id = H5P_DEFAULT;
+#  ifdef HAVE_MPI
         //
         // Create property list for collective dataset write.
         //
-        plist_id = H5Pcreate(H5P_DATASET_XFER);
+      plist_id = H5Pcreate(H5P_DATASET_XFER);
+      
+#    ifdef HDF5_FF
+
+	tid1 = H5TRcreate(h5_fid, rid2, (uint64_t)2);
+
+	trans_num = 3;
+	printf("H5TRstart 3\n");
+	ret = H5TRstart(tid1, H5P_DEFAULT, H5_EVENT_STACK_NULL);
+#    else
+      H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+#    endif
+
+#  endif
+      if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ||
+	  (strncmp(memory_item->mem_name,"mesh_double_vals",16) == 0) ) {
+	hid_t aid;
+#  ifdef HDF5_FF
+	if(mype == 0) {
+	  aid = H5Acreate_ff(gid, memory_item->mem_name, filetype, sid, 
+			     H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
+	  assert(aid > 0);
+          // Write the attribute data.
+	  h5err = H5Awrite_ff(aid, filetype, mem_ptr, tid1, e_stack);
+	  h5err = H5Aclose_ff(aid, e_stack);
+	}
+#  else
+	aid = H5Acreate2(gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT);
+	// Write the attribute data.
+	h5err = H5Awrite(aid, filetype, mem_ptr);
+	h5err = H5Aclose(aid);
+#  endif
+      } else if( (strstr(memory_item->mem_name,"_timer") !=NULL) ||
+		 (strstr(memory_item->mem_name,"_counters") !=NULL) ||
+		 (strstr(memory_item->mem_name,"int_dist_vals") !=NULL)   ) {
+          
+	hid_t did;
+	hsize_t dims[2], start[2], count[2]; // MSB
+	hsize_t dims_glb[2];
+	hid_t sid1;
+	hid_t memspace, filespace;
+	
+	dims[0] = npes;
+	dims[1] = (hsize_t)memory_item->mem_nelem[0];
+	
+	dims_glb[0] =(hsize_t)memory_item->mem_nelem[0];
+	dims_glb[1] =(hsize_t)memory_item->mem_nelem[1];
+	
+	
+	count[0] = 1;
+	count[1] = (hsize_t)memory_item->mem_nelem[0];
+	
+	start[0] = mype;
+	start[1] = 0;
+
+	filespace = H5Screate_simple (2, dims, NULL);
+	memspace = H5Screate_simple(2, count, NULL); 
+#  ifdef HDF5_FF
+
+	did = H5Dcreate_ff (gid, memory_item->mem_name, filetype, filespace, 
+			      H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
+	assert(did > 0);
+	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
+	h5err = H5Dwrite_ff (did, memtype, memspace, filespace, plist_id, mem_ptr, tid1, e_stack);
+        
+	if(H5Sclose(filespace) < 0)
+	  printf("HDF5: Could not close dataspace \n");
+	if(H5Sclose(memspace) < 0)
+	  printf("HDF5: Could not close dataspace \n");
+	if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
+	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
+
+#  else
+	int *val = (int*)mem_ptr;
+	printf("%s %d %d \n",memory_item->mem_name,val[0], val[1]);
+	did = H5Dcreate2 (gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
+	h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
+        
+	if(H5Sclose(filespace) < 0)
+	  printf("HDF5: Could not close dataspace \n");
+	if(H5Sclose(memspace) < 0)
+	  printf("HDF5: Could not close dataspace \n");
+	if(H5Dclose(did) < 0)
+	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
+
+#  endif
+      } else if( (strstr(memory_item->mem_name,"bootstrap_") !=NULL) ) {
+
+	hid_t did;
 
 #  ifdef HDF5_FF
 
-// 	tid1 = H5TRcreate(h5_fid, rid2, (uint64_t)2);
-
-// 	trans_num = 3;
-// 	printf("H5TRstart 3\n");
-// 	ret = H5TRstart(tid1, H5P_DEFAULT, H5_EVENT_STACK_NULL);
+	did = H5Dcreate_ff (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
+	if(mype == 0) {
+	  h5err = H5Dwrite_ff (did, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr, tid1, e_stack);
+	}
+	  
+	if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
+	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
 #  else
- 	H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+	did = H5Dcreate2 (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	if(mype == 0) {
+	  h5err = H5Dwrite (did, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
+	}
+	  
+	if(H5Dclose(did) < 0)
+	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
 #  endif
 
-#endif
-        if( (strncmp(memory_item->mem_name,"state_long_vals",15) == 0) ||
-            (strncmp(memory_item->mem_name,"mesh_double_vals",16) == 0) ) {
-          hid_t aid;
-#ifdef HDF5_FF
-	  if(mype == 0) {
-	    aid = H5Acreate_ff(gid, memory_item->mem_name, filetype, sid, 
-			       H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
-	    assert(aid > 0);
-          // Write the attribute data.
-	    h5err = H5Awrite_ff(aid, filetype, mem_ptr, tid1, e_stack);
-	    h5err = H5Aclose_ff(aid, e_stack);
-	  }
-#else
-	  aid = H5Acreate2(gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT);
-          // Write the attribute data.
-          h5err = H5Awrite(aid, filetype, mem_ptr);
-          h5err = H5Aclose(aid);
-#endif
-        } else if( (strstr(memory_item->mem_name,"_timer") !=NULL) ||
-                   (strstr(memory_item->mem_name,"_counters") !=NULL) ||
-                   (strstr(memory_item->mem_name,"int_dist_vals") !=NULL)   ) {
-          
-          hid_t did;
-	  hsize_t dims_glb[2];
-          hid_t sid1;
+      } else {
+	
+	hid_t filespace;
+	hid_t memspace;
+	hsize_t dims[1], start[1], count[1];
+#  ifdef HAVE_MPI
+	  
+	dims[0] = (hsize_t)numcells_glb;
+	count[0] = (hsize_t)memory_item->mem_nelem[0];
+	start[0] = 0;
+	for (int j=0; j<mype; j++)
+	  start[0] = start[0] + rncells[j];
+	  
+	  // printf("start %s %ld \n", memory_item->mem_name, start[0]);
+          // MSB check this is not needed: start[0] = (hsize_t)(count[0]*mype);
+	  //  start[0] = (hsize_t)(count[0]*mype);
+	  
+	filespace = H5Screate_simple (1, dims, NULL);
+	
+	memspace = H5Screate_simple(1, count, NULL);
+#  else  
+	memspace = H5S_ALL;
+	filespace = H5S_ALL;
+#  endif
+	  
+	hid_t did;
 
-          dims[0] = npes;
-          dims[1] = (hsize_t)memory_item->mem_nelem[0];
+#  ifdef HDF5_FF
+	did = H5Dcreate_ff(gid, memory_item->mem_name, filetype, filespace,
+			   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
+	assert(did > 0);
+	
+	// Select hyperslab in the file.
+	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
+	h5err = H5Dwrite_ff (did, memtype, memspace, filespace, plist_id, mem_ptr, tid1, e_stack);
+	
+	if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
+	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
 
-	  dims_glb[0] =(hsize_t)memory_item->mem_nelem[0];
-	  dims_glb[1] =(hsize_t)memory_item->mem_nelem[1];
+	h5err = H5Sclose(filespace);
+	h5err = H5Sclose(memspace);
 
-
-          count[0] = 1;
-          count[1] = (hsize_t)memory_item->mem_nelem[0];
-
-          start[0] = mype;
-          start[1] = 0;
-
-          filespace = H5Screate_simple (2, dims, NULL);
-	  memspace = H5Screate_simple(2, count, NULL); 
-#ifdef HDF5_FF
-
-          did = H5Dcreate_ff (gid, memory_item->mem_name, filetype, filespace, 
-			      H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
-	  assert(did > 0);
-          H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
-          h5err = H5Dwrite_ff (did, memtype, memspace, filespace, plist_id, mem_ptr, tid1, e_stack);
-          
-          if(H5Sclose(filespace) < 0)
-            printf("HDF5: Could not close dataspace \n");
-          if(H5Sclose(memspace) < 0)
-            printf("HDF5: Could not close dataspace \n");
-	  if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
-             printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-
-#else
-          did = H5Dcreate2 (gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-          H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
-          h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
-          
-          if(H5Sclose(filespace) < 0)
-            printf("HDF5: Could not close dataspace \n");
-          if(H5Sclose(memspace) < 0)
-            printf("HDF5: Could not close dataspace \n");
-          if(H5Dclose(did) < 0)
-            printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-
-#endif
-	} else if( (strstr(memory_item->mem_name,"bootstrap_") !=NULL) ) {
-
-          hid_t did;
-
-#ifdef HDF5_FF
-
-	  did = H5Dcreate_ff (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
- 	  if(mype == 0) {
- 	    h5err = H5Dwrite_ff (did, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr, tid1, e_stack);
+	  if(0 != mype) {
+	    H5ESget_count(e_stack, &num_events);
+	    H5ESwait_all(e_stack, &status);
+	    H5ESclear(e_stack);
+	    printf("%d events in event stack. Completion status = %d\n", num_events, status);
+	    assert(status == H5ES_STATUS_SUCCEED);
  	  }
-	  
-          if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
-            printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-#else
-
-	  did = H5Dcreate2 (gid, memory_item->mem_name, filetype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
- 	  if(mype == 0) {
- 	    h5err = H5Dwrite (did, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
- 	  }
-	  
-          if(H5Dclose(did) < 0)
-            printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-	  
-
-#endif
-
-        } else {
-
-#ifdef HAVE_MPI
-	  hid_t filespace;
-	  hid_t memspace;
-          hsize_t dims[1], start[1], count[1];
-	  
-	  dims[0] = (hsize_t)numcells_glb;
-          count[0] = (hsize_t)memory_item->mem_nelem[0];
-	  start[0] = 0;
-	  for (int j=0; j<mype; j++)
-	    start[0] = start[0] + rncells[j];
-	  
-          start[0] = (hsize_t)(count[0]*mype);
-	  
-          filespace = H5Screate_simple (1, dims, NULL);
-	  
-	  memspace = H5Screate_simple(1, count, NULL);
-#else  
-	  memspace = H5S_ALL;
-	  filespace = H5S_ALL;
-#endif
-	  
-          hid_t did;
-
-#ifdef HDF5_FF
- 	  did = H5Dcreate_ff(gid, memory_item->mem_name, filetype, filespace,
-			     H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, tid1, e_stack);
-	  assert(did > 0);
-
-	  // Select hyperslab in the file.
-	  H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
-	  h5err = H5Dwrite_ff (did, memtype, memspace, filespace, plist_id, mem_ptr, tid1, e_stack);
-
-	  if(H5Dclose_ff(did, H5_EVENT_STACK_NULL) < 0)
-	    printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-	  
-#    ifdef HAVE_MPI
-	  h5err = H5Sclose(filespace);
-	  h5err = H5Sclose(memspace);
-#    endif
-// 	  if(0 != mype) {
-// 	    H5ESget_count(e_stack, &num_events);
-// 	    H5ESwait_all(e_stack, &status);
-// 	    H5ESclear(e_stack);
-// 	    printf("%d events in event stack. Completion status = %d\n", num_events, status);
-// 	    assert(status == H5ES_STATUS_SUCCEED);
-//  	  }
-	}
 
 	// Barrier to make sure all processes are done writing so Process
 	// 0 can finish transaction 1 and acquire a read context on it.
@@ -464,75 +488,74 @@ void Crux::store_MallocPlus(MallocPlus memory){
 	// finish their updates. Leader also asks the library to acquire
 	// the committed transaction, that becomes a readable version
 	// after the commit completes.
-// 	if(0 == mype) {
-// 	  MPI_Wait(&mpi_req, MPI_STATUS_IGNORE);
+	if(0 == mype) {
+	  MPI_Wait(&mpi_req, MPI_STATUS_IGNORE);
 
-// 	  // make this synchronous so we know the container version has been acquired
-// 	  ret = H5TRfinish(tid1, H5P_DEFAULT, &rid2, H5_EVENT_STACK_NULL);
-// 	  assert(0 == ret);
-// 	  ret = H5RCrelease(rid2, e_stack);
-// 	}
-// 	ret = H5TRclose(tid1);
-// 	assert(0 == ret);
+	  // make this synchronous so we know the container version has been acquired
+	  ret = H5TRfinish(tid1, H5P_DEFAULT, &rid2, H5_EVENT_STACK_NULL);
+	  assert(0 == ret);
+	  ret = H5RCrelease(rid2, e_stack);
+	}
+	ret = H5TRclose(tid1);
+	assert(0 == ret);
 
-// 	// release container version 1. This is async.
-// 	if(0 == mype) {
-// 	  ret = H5RCrelease(rid1, e_stack);
-// 	  assert(0 == ret);
-// 	}
+	// release container version 1. This is async.
+	if(0 == mype) {
+	  ret = H5RCrelease(rid1, e_stack);
+	  assert(0 == ret);
+	}
 
-// 	H5ESget_count(e_stack, &num_events);
-// 	H5ESwait_all(e_stack, &status);
-// 	printf("%d events in event stack. H5ESwait_all Completion status = %d\n", num_events, status);
-// 	H5ESclear(e_stack);
-// 	assert(status == H5ES_STATUS_SUCCEED);
+	H5ESget_count(e_stack, &num_events);
+	H5ESwait_all(e_stack, &status);
+	printf("%d events in event stack. H5ESwait_all Completion status = %d\n", num_events, status);
+	H5ESclear(e_stack);
+	assert(status == H5ES_STATUS_SUCCEED);
 
-#else
-	did = H5Dcreate2(gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+#  else
 
-	// Select hyperslab in the file.
-	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
+      int *val = (int*)mem_ptr;
+      printf("THIS %s %d %d \n",memory_item->mem_name,val[0], val[1]);
+      did = H5Dcreate2(gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
-	h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
-	if(H5Dclose(did) < 0)
-	  printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
-
+      // Select hyperslab in the file.
+      H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
+      
+      h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
+      if(H5Dclose(did) < 0)
+	printf("HDF5: Could not close dataset %s \n",memory_item->mem_name);
+      
 #    ifdef HAVE_MPI
-	h5err = H5Sclose(filespace);
-	h5err = H5Sclose(memspace);
+      h5err = H5Sclose(filespace);
+      h5err = H5Sclose(memspace);
 #    endif
-
+     
+#  endif 
       }
-#endif
       if(H5Sclose(sid) < 0)
 	printf("HDF5: Could not close dataspace \n");
-#ifdef HAVE_MPI
-      if(H5Pclose(plist_id) < 0)
-	printf("HDF5: Could not close property list \n");
+#  ifdef HAVE_MPI
+    if(H5Pclose(plist_id) < 0)
+      printf("HDF5: Could not close property list \n");
+#  endif
+     }
 #endif
-#endif
+    if (USE_HDF5 != true) {
       store_field_header(memory_item->mem_name,30);
       if (memory_item->mem_flags & REPLICATED_DATA) { 
-         if (memory_item->mem_elsize == 4){
-            store_replicated_int_array((int *)mem_ptr, num_elements);
-         } else {
-            store_replicated_double_array((double *)mem_ptr, num_elements);
-         }
+	if (memory_item->mem_elsize == 4){
+	  store_replicated_int_array((int *)mem_ptr, num_elements);
+	} else {
+	  store_replicated_double_array((double *)mem_ptr, num_elements);
+	}
       } else {
-         if (memory_item->mem_elsize == 4){
-            store_int_array((int *)mem_ptr, num_elements);
-         } else {
-            store_double_array((double *)mem_ptr, num_elements);
-         }
+	if (memory_item->mem_elsize == 4){
+	  store_int_array((int *)mem_ptr, num_elements);
+	} else {
+	  store_double_array((double *)mem_ptr, num_elements);
+	}
       }
-//       store_field_header(memory_item->mem_name,20);
-//       if (memory_item->mem_elsize == 4){
-//          store_int_array((int *)mem_ptr, num_elements);
-//       } else {
-//          store_double_array((double *)mem_ptr, num_elements);
-//       }
-   }
-}
+    }
+  }
 }
 
 void Crux::store_begin(size_t nsize, int ncycle)
@@ -567,6 +590,7 @@ void Crux::store_begin(size_t nsize, int ncycle)
       store_fp = fmemopen(crux_data[cp_num], nsize, "w");
    }
    if(crux_type == CRUX_DISK){
+     // MSB  char backup_file[60];
 
 #ifdef HAVE_HDF5
       hid_t plist_id;
@@ -731,42 +755,37 @@ void Crux::store_begin(size_t nsize, int ncycle)
         if( (h5_gid_s = H5Gcreate(h5_fid, "state", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) ) < 0)
           printf("HDF5: Could not create \"state\" group \n");
 #  endif
-      }
-
+#endif
+      if (USE_HDF5 != true) {
+	sprintf(backup_file,"%s/backup%05d.crx",checkpoint_directory,ncycle);
+#ifdef HAVE_MPI
+	int iret = MPI_File_open(MPI_COMM_WORLD, backup_file, MPI_MODE_CREATE|MPI_MODE_WRONLY, MPI_INFO_NULL, &mpi_store_fp);
+	if(iret != MPI_SUCCESS) {
+	  printf("Could not write %s at iteration %d\n",backup_file,ncycle);
+	}
+#else
+	store_fp = fopen(backup_file,"w");
+	if(!store_fp){
+	  printf("Could not write %s at iteration %d\n",backup_file,ncycle);
+	}
 #endif
 
-      sprintf(backup_file,"%s/backup%05d.crx",checkpoint_directory,ncycle);
-#ifndef HDF5_FF
-      if(!USE_HDF5) {
-
-# ifdef HAVE_MPI
-      int iret = MPI_File_open(MPI_COMM_WORLD, backup_file, MPI_MODE_CREATE|MPI_MODE_WRONLY, MPI_INFO_NULL, &mpi_store_fp);
-      if(iret != MPI_SUCCESS) {
-         printf("Could not write %s at iteration %d\n",backup_file,ncycle);
-      }
-# else
-      store_fp = fopen(backup_file,"w");
-      if(!store_fp){
-         printf("Could not write %s at iteration %d\n",backup_file,ncycle);
-      }
-# endif
-      }
-
-#endif
-      if (mype == 0) {
-        char symlink_file[60];
-        sprintf(symlink_file,"%s/backup%1d.crx",checkpoint_directory,cp_num);
-        symlink(backup_file, symlink_file);
+	if (mype == 0) {
+	  char symlink_file[60];
+	  sprintf(symlink_file,"%s/backup%1d.crx",checkpoint_directory,cp_num);
+	  symlink(backup_file, symlink_file);
 //      int ireturn = symlink(backup_file, symlink_file);
 //      if (ireturn == -1) {
 //         printf("Warning: error returned with symlink call for file %s and symlink %s\n",
 //                backup_file,symlink_file);
 //      }
+	}
       }
    }
 
    if (do_crux_timing){
       checkpoint_timing_size += nsize;
+   }
    }
 }
 
@@ -903,7 +922,6 @@ void Crux::store_replicated_double_array(double *double_array, size_t nelem)
 
 void Crux::store_end(void)
 {
-<<<<<<< HEAD
 //    assert(store_fp != NULL);
 //    fclose(store_fp);
 
@@ -1105,27 +1123,31 @@ void Crux::store_end(void)
    H5Fclose_ff( file_id, 1, H5_EVENT_STACK_NULL );
    H5Pclose( fapl_id );
 
-#else
+#endif
+
+#ifdef HAVE_HDF5
+   if(USE_HDF5) {
    // Now, reopen file and show contents of all available CVs
 
-   hid_t file_id, fapl_id;
+     hid_t file_id, fapl_id;
 
-   /* Reopen the file Read/Write */
-   fprintf( stderr, "%d: open the container\n", mype );
+     /* Reopen the file Read/Write */
+     fprintf( stderr, "%d: open the file\n", mype );
 
-   fapl_id = H5Pcreate( H5P_FILE_ACCESS );
-   H5Pset_fapl_mpio(fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL);
+     fapl_id = H5Pcreate( H5P_FILE_ACCESS );
+     H5Pset_fapl_mpio(fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL);
 
    /* Get latest CV on open */
-   file_id = H5Fopen(backup_file, H5F_ACC_RDONLY, fapl_id); 
+     file_id = H5Fopen(backup_file, H5F_ACC_RDONLY, fapl_id); 
 
-   print_container_contents(file_id, mype );
-
-   MPI_Barrier( MPI_COMM_WORLD );
-
+     print_container_contents(file_id, mype );
+     
+     MPI_Barrier( MPI_COMM_WORLD );
+     
    /* Close 2 H5 Objects that are still open */
-   H5Fclose( file_id );
-   H5Pclose( fapl_id );
+     H5Fclose( file_id );
+     H5Pclose( fapl_id );
+   }
 
 #endif
 
@@ -1134,7 +1156,13 @@ void Crux::store_end(void)
 int restore_type = RESTORE_NONE;
 
 void Crux::restore_MallocPlus(MallocPlus memory){
+      printf("Crux::restore_MallocPlus \n");
    char test_name[34];
+#ifdef HAVE_MPI
+   MPI_Comm_rank(MPI_COMM_WORLD,&mype);
+   MPI_Comm_size(MPI_COMM_WORLD,&npes);
+#endif
+
    malloc_plus_memory_entry *memory_item;
    for (memory_item = memory.memory_entry_by_name_begin(); 
       memory_item != memory.memory_entry_by_name_end();
@@ -1147,8 +1175,8 @@ void Crux::restore_MallocPlus(MallocPlus memory){
       for (uint i = 0; i < memory_item->mem_ndims; i++){
 	 num_elements *= memory_item->mem_nelem[i];
       }
-
-      if (DEBUG) {
+      //if (DEBUG) {
+      if (1) {
         printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
            mem_ptr,memory_item->mem_name,memory_item->mem_ptr,memory_item->mem_ndims);
 
@@ -1164,24 +1192,77 @@ void Crux::restore_MallocPlus(MallocPlus memory){
            memory_item->mem_elsize,memory_item->mem_flags,memory_item->mem_capacity);
       }
 
-      restore_field_header(test_name,30);
-      if (strcmp(test_name,memory_item->mem_name) != 0) {
-         printf("ERROR in restore checkpoint for %s %s\n",test_name,memory_item->mem_name);
-      }
+      if(!USE_HDF5) {
+	restore_field_header(test_name,30);
+	if (strcmp(test_name,memory_item->mem_name) != 0) {
+	  printf("ERROR in restore checkpoint for %s %s\n",test_name,memory_item->mem_name);
+	}
 
-      if (memory_item->mem_flags & REPLICATED_DATA) { 
-         if (memory_item->mem_elsize == 4){
+	if (memory_item->mem_flags & REPLICATED_DATA) { 
+	  if (memory_item->mem_elsize == 4){
             restore_replicated_int_array((int *)mem_ptr, num_elements);
-         } else {
+	  } else {
             restore_replicated_double_array((double *)mem_ptr, num_elements);
-         }
-      } else {
-         if (memory_item->mem_elsize == 4){
+	  }
+	} else {
+	  if (memory_item->mem_elsize == 4){
             restore_int_array((int *)mem_ptr, num_elements);
-         } else {
+	  } else {
             restore_double_array((double *)mem_ptr, num_elements);
-         }
+	  }
+	}
       }
+#ifdef HAVE_HDF5
+      else {
+	if(strstr(memory_item->mem_name,"boot") != NULL) {
+	  hid_t gid, dset_id;
+	  gid = H5Gopen(h5_fid,"clamr", H5P_DEFAULT);
+	  if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	    printf("ERROR in restore checkpoint for clamr/%s\n",memory_item->mem_name);
+	  }
+	  hid_t dtype = H5Dget_type(dset_id);
+	  H5Dread( dset_id, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
+	  H5Tclose(dtype);
+	  H5Gclose(gid);
+	  H5Dclose(dset_id);
+	} else if( strcmp(memory_item->mem_name,"i")  || 
+		   strcmp(memory_item->mem_name,"j")  || 
+		   strcmp(memory_item->mem_name,"level")  ||
+		   strcmp(memory_item->mem_name,"amesh_int_dist_vals") ) {
+	  hid_t gid, dset_id;
+	  gid = H5Gopen(h5_fid,"mesh", H5P_DEFAULT);
+	  if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	    printf("ERROR in restore checkpoint for clamr/%s\n",memory_item->mem_name);
+	  }
+	  hid_t dtype = H5Dget_type(dset_id);
+	  if( strcmp(memory_item->mem_name,"amesh_int_dist_vals") == 0 ) {
+
+	    hsize_t stride[2], block[2];
+	    hsize_t count[2], start[2];
+	    hsize_t dims[2];
+	    hid_t dataspace = H5Dget_space (dset_id);
+	    H5Sget_simple_extent_dims(dataspace, dims, NULL );
+
+	    start [0] = mype;
+	    start [1] = 0;
+	    count [0] = 1;
+	    count [1] = dims[1];
+
+	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+
+// 	    hid_t memspace = H5Screate_simple (2, count, NULL);  
+// 	    H5Sselect_hyperslab(memspace, H5S_SELECT_SET, start, NULL, count, NULL);
+
+	    
+	    H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+	  }
+	  H5Tclose(dtype);
+	  H5Gclose(gid);
+	  H5Dclose(dset_id);
+	} else
+	  printf("Error: unknown dataset %s\n",memory_item->mem_name);
+      }
+#endif
    }
 
 }
@@ -1193,24 +1274,40 @@ void Crux::restore_begin(char *restart_file, int rollback_counter)
    cpu_timer_start(&trestore_time);
 
    if (restart_file != NULL){
+
       if (mype == 0) {
          printf("\n  ================================================================\n");
          printf(  "  Restoring state from disk file %s\n",restart_file);
          printf(  "  ================================================================\n\n");
       }
+
+#ifdef HAVE_HDF5
+      hid_t fapl_id;
+#endif
+      if(!USE_HDF5) {
 #ifdef HAVE_MPI
-      int iret = MPI_File_open(MPI_COMM_WORLD, restart_file, MPI_MODE_RDONLY | MPI_MODE_UNIQUE_OPEN, MPI_INFO_NULL, &mpi_restore_fp);
-      if(iret != MPI_SUCCESS){
-         //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
-         printf("Could not open restart file %s\n",restart_file);
-      }
+	int iret = MPI_File_open(MPI_COMM_WORLD, restart_file, MPI_MODE_RDONLY | MPI_MODE_UNIQUE_OPEN, MPI_INFO_NULL, &mpi_restore_fp);
+	if(iret != MPI_SUCCESS){
+	  //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
+	  printf("Could not open restart file %s\n",restart_file);
+	}
 
 #else
-      restore_fp = fopen(restart_file,"r");
-      if(!restore_fp){
+	restore_fp = fopen(restart_file,"r");
+	if(!restore_fp){
          //printf("Could not write %s at iteration %d\n",restart_file,crux_int_vals[8]);
-         printf("Could not open restart file %s\n",restart_file);
+	  printf("Could not open restart file %s\n",restart_file);
+	}
+#endif
       }
+#ifdef HAVE_HDF5
+      else {
+	fapl_id = H5Pcreate( H5P_FILE_ACCESS );
+	H5Pset_fapl_mpio(fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL);
+	if( (h5_fid = H5Fopen(restart_file, H5F_ACC_RDONLY, fapl_id)) < 0)
+	  printf("Could not open restart file %s\n",restart_file);
+      }
+      H5Pclose( fapl_id );
 #endif
       restore_type = RESTORE_RESTART;
    } else if(crux_type == CRUX_IN_MEMORY){
@@ -1236,17 +1333,26 @@ void Crux::restore_field_header(char *name, int name_size)
    assert(name != NULL);
    MPI_Status status;
    MPI_File_read_shared(mpi_restore_fp, name, name_size, MPI_CHAR, &status);
-#ifdef DEBUG_RESTORE_VALS
+# ifdef DEBUG_RESTORE_VALS
    int count;
    MPI_Get_count(&status, MPI_CHAR, &count);
    printf("Read %d characters at line %d in file %s\n",count,__LINE__,__FILE__);
-#endif
+# endif
 
 #else
+  if(!USE_HDF5) {
    int name_read = fread(name,sizeof(char),name_size,restore_fp);
    if (name_read != name_size){
       printf("Warning: number of elements read %d is not equal to request %d\n",name_read,name_size);
    }
+
+  }
+# ifdef HAVE_HDF5
+  else {
+    
+    // MSB
+  }
+# endif
 #endif
 }
 
@@ -1289,6 +1395,23 @@ void Crux::restore_doubles(double *double_vals, size_t nelem)
       printf("Warning: number of elements read %lu is not equal to request %lu\n",nelem_read,nelem);
    }
 }
+
+#ifdef HAVE_HDF5
+void Crux::restore_hdf5_values(void *vals, const char* dataset)
+{
+  hid_t dset_id;
+  if( (dset_id = H5Dopen(h5_fid, dataset, H5P_DEFAULT)) < 0 )
+    printf("Error: Cannot open dataset %s \n", dataset);
+
+  hid_t dtype = H5Dget_type(dset_id);
+  if( H5Dread(dset_id, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, vals) < 0 )
+    printf("Error: Cannot read dataset %s \n", dataset);
+
+  H5Tclose(dtype);
+  H5Dclose(dset_id);
+
+}
+#endif
 
 int *Crux::restore_int_array(int *int_array, size_t nelem)
 {
@@ -1402,7 +1525,14 @@ void Crux::restore_end(void)
       }
    }
 
-   fclose(restore_fp);
+   if(!USE_HDF5) {
+     fclose(restore_fp);
+   }
+#ifdef HAVE_HDF5
+   else {
+     H5Fclose( h5_fid );
+   }
+#endif     
 
 }
 
@@ -1581,6 +1711,7 @@ print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank )
    return;
 }
 #else
+#  if HAVE_HDF5 
 void
 print_container_contents( hid_t file_id, int my_rank )
 {
@@ -1695,6 +1826,7 @@ print_container_contents( hid_t file_id, int my_rank )
  	   if ( nDims == 1 ) {
  	     for ( k = 0; k < totalSize; k++ ) {
 	       if(verbose_io) printf( "%d ", data_int[k] );
+	       //   if(verbose_io) printf( "%d ", data_int[k] );
  	     }
 	   } else {
 	     int r, c;
@@ -1702,6 +1834,7 @@ print_container_contents( hid_t file_id, int my_rank )
 	     for ( r = 0; r < current_size[0]; r++ ) {
                for ( c = 0; c < current_size[1]; c++ ) {
 		 if(verbose_io) printf( "%d ", data_int[k] );
+		 //	 if(verbose_io) printf( "%d ", data_int[k] );
 		 k++;
                }
 	     }
@@ -1713,13 +1846,14 @@ print_container_contents( hid_t file_id, int my_rank )
 	   if ( nDims == 1 ) {
 	     for ( k = 0; k < totalSize; k++ ) {
                if(verbose_io) printf( "%f ", data_double[k] );
+	       // MSB  if(verbose_io) printf( "%f ", data_double[k] );
 	     }
 	   } else {
 	     int r, c;
 	     k = 0;
 	     for ( r = 0; r < current_size[0]; r++ ) {
                for ( c = 0; c < current_size[1]; c++ ) {
-		 if(verbose_io) printf( "%f ", data_double[k] );
+		 if(verbose_io) printf( "%f ", data_double[k] ); // MSB uncomm
 		 k++;
                }
 	     }
@@ -1739,7 +1873,7 @@ print_container_contents( hid_t file_id, int my_rank )
 
    return;
 }
-
+#endif
 #endif
 void Crux::set_crux_type(int crux_type_in)
 {

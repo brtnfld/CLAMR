@@ -190,7 +190,8 @@ enum mesh_counters
    MESH_COUNTER_SIZE
 };
 
-//#ifdef DEBUG_RESTORE_VALS
+#define  DEBUG_RESTORE_VALS 1 //MSB
+  //#ifdef DEBUG_RESTORE_VALS
 static const char *mesh_counter_descriptor[MESH_COUNTER_SIZE] = {
    "mesh_counter_rezone",
    "mesh_counter_refine_smooth",
@@ -308,7 +309,7 @@ public:
                   *j,            //!<  1D array of mesh element y-indices.
                   *k,            //!<  1D array of mesh element z-indices.
                   *level,        //!<  1D array of mesh element refinement levels.
-                                 //!<  derived data from mesh state data
+     *dist,               //!<  derived data from mesh state data
                   *celltype,     //!<  1D ordered index of mesh element cell types (ghost or real).
                   *nlft,         //!<  1D ordered index of mesh element left neighbors.
                   *nrht,         //!<  1D ordered index of mesh element right neighbors.

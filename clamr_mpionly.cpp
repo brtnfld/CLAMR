@@ -234,10 +234,13 @@ int main(int argc, char **argv) {
    if (restart){
       restore_crux_data_bootstrap(crux, restart_file, 0);
       mesh  = new Mesh(nx, ny, levmx, ndim, deltax_in, deltay_in, boundary, parallel_in, do_gpu_calc);
+      
       mesh->init(nx, ny, circ_radius, initial_order, do_gpu_calc);
 
       state = new State(mesh);
+      printf("here2 \n");
       restore_crux_data(crux);
+      printf("here3 \n");
       mesh->proc.resize(mesh->ncells);
       mesh->calc_distribution(numpe);
    } else {
