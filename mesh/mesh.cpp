@@ -10189,7 +10189,7 @@ void Mesh::store_checkpoint(Crux *crux)
    int ncells_int,noffset;
    noffset = 0;
 #ifdef HAVE_MPI
-   MPI_Scan(&ncells_int, &noffset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   MPI_Scan(&ncells, &noffset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
    //printf("noffset is %d\n",noffset);
 
@@ -10219,8 +10219,8 @@ void Mesh::store_checkpoint(Crux *crux)
    double_vals[0] = offtile_ratio_local;
 
    int flags = RESTART_DATA;
-   printf("ncells, nooffset %d %d \n", ncells_int, int_dist_vals[ 1]);
-   printf("crux_mesh_version, ndim %d %d \n", int_vals[ 0], int_vals[ 1]);
+   //printf("ncells, nooffset %d %d \n", ncells, int_dist_vals[ 1]);
+   //printf("crux_mesh_version, ndim %d %d \n", int_vals[ 0], int_vals[ 1]);
    // Now add memory entries to database for storing checkpoint
    mesh_memory.memory_add(int_dist_vals, (size_t)num_int_dist_vals, 4, "amesh_int_dist_vals", flags);
    flags = RESTART_DATA | REPLICATED_DATA;

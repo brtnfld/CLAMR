@@ -248,7 +248,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
 
     MPI_Allgather(&memory_item->mem_nelem[0], 1, MPI_UNSIGNED_LONG_LONG, rncells, 1, MPI_LONG_LONG, MPI_COMM_WORLD);
 
-    printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
+    //  printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
 
     if (DEBUG) {
       printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
@@ -326,7 +326,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
 	tid1 = H5TRcreate(h5_fid, rid2, (uint64_t)2);
 
 	trans_num = 3;
-	printf("H5TRstart 3\n");
+	//	printf("H5TRstart 3\n");
 	ret = H5TRstart(tid1, H5P_DEFAULT, H5_EVENT_STACK_NULL);
 #    else
       H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
@@ -368,12 +368,11 @@ void Crux::store_MallocPlus(MallocPlus memory){
 	dims_glb[1] =(hsize_t)memory_item->mem_nelem[1];
 	
 	
+	start[0] = mype;
+	start[1] = 0;
 	count[0] = 1;
 	count[1] = (hsize_t)memory_item->mem_nelem[0];
 	
-	start[0] = mype;
-	start[1] = 0;
-
 	filespace = H5Screate_simple (2, dims, NULL);
 	memspace = H5Screate_simple(2, count, NULL); 
 #  ifdef HDF5_FF
@@ -393,9 +392,11 @@ void Crux::store_MallocPlus(MallocPlus memory){
 
 #  else
 	int *val = (int*)mem_ptr;
-	printf("%s %d %d \n",memory_item->mem_name,val[0], val[1]);
+	printf("store_MallocPlus %s %d %d %d %d \n",memory_item->mem_name,val[0], val[1],val[2], val[3]);
+	//printf("start, count %d %d \n",start[0], count[1]);
 	did = H5Dcreate2 (gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL ); 
+	H5Sselect_hyperslab(filespace, H5S_SELECT_SET, start, NULL, count, NULL );
+ 	//val[0]=100-mype;val[1]=200-mype;val[2]=300-mype;val[3]=400-mype;
 	h5err = H5Dwrite (did, memtype, memspace, filespace, plist_id, mem_ptr);
         
 	if(H5Sclose(filespace) < 0)
@@ -514,7 +515,7 @@ void Crux::store_MallocPlus(MallocPlus memory){
 #  else
 
       int *val = (int*)mem_ptr;
-      printf("THIS %s %d %d \n",memory_item->mem_name,val[0], val[1]);
+      //printf("THIS %s %d %d \n",memory_item->mem_name,val[0], val[1]);
       did = H5Dcreate2(gid, memory_item->mem_name, filetype, filespace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
       // Select hyperslab in the file.
@@ -1102,7 +1103,7 @@ void Crux::store_end(void)
 	 rc_id = H5RCcreate( file_id, version ); 
        }
        assert ( version == v );
-       print_container_contents_ff(file_id, rc_id, mype );
+       //  print_container_contents_ff(file_id, rc_id, mype );
 
        MPI_Barrier( MPI_COMM_WORLD );
        if(v < last_version) {
@@ -1140,7 +1141,7 @@ void Crux::store_end(void)
    /* Get latest CV on open */
      file_id = H5Fopen(backup_file, H5F_ACC_RDONLY, fapl_id); 
 
-     print_container_contents(file_id, mype );
+     //print_container_contents(file_id, mype );
      
      MPI_Barrier( MPI_COMM_WORLD );
      
@@ -1614,7 +1615,7 @@ print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank )
 	 dtype = H5T_NATIVE_INT;
       } else if ( i == 2 ){ 
          strcpy( name, "j" );
-         strcpy( path, "/mesh/" ); 
+         strcpy( path, "/mesh/" ); ßß
 	 dtype = H5T_NATIVE_INT;
       } else if ( i == 3 ){
          strcpy( name, "level" );
@@ -1660,7 +1661,7 @@ print_container_contents_ff( hid_t file_id, hid_t rc_id, int my_rank )
             totalSize = current_size[0] * current_size[1];
          }
 
-	 printf("r%d: object : %s \n", my_rank, path_to_object);
+	 //printf("r%d: object : %s \n", my_rank, path_to_object);
 	 if (i < 4) {
 	   data_int = (int *)calloc( totalSize, sizeof(int) ); assert( data_int != NULL );
 	   ret = H5Dread_ff( dset_id, dtype, space_id, space_id, H5P_DEFAULT, data_int, rc_id, H5_EVENT_STACK_NULL );

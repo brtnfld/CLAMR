@@ -791,7 +791,11 @@ void store_crux_data(Crux *crux, int ncycle)
                   num_double_vals*sizeof(double);
    nsize += state->get_checkpoint_size();
 
+   next_cp_cycle += checkpoint_outputInterval;
+
    int int_vals[num_int_vals];
+   
+   
 
    int_vals[ 0] = CRUX_CLAMR_VERSION; // Version number
    int_vals[ 1] = nx;
@@ -832,7 +836,6 @@ void store_crux_data(Crux *crux, int ncycle)
    clamr_bootstrap_memory.memory_remove(int_vals);
    clamr_bootstrap_memory.memory_remove(double_vals);
 
-   next_cp_cycle += checkpoint_outputInterval;
 }
 
 void restore_crux_data_bootstrap(Crux *crux, char *restart_file, int rollback_counter)
