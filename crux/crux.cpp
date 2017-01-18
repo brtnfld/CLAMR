@@ -233,13 +233,15 @@ void Crux::store_MallocPlus(MallocPlus memory){
 #endif
 
     int num_elements = 1;
-    for (uint i = 0; i < memory_item->mem_ndims; i++){
+    for (uint i = 1; i < memory_item->mem_ndims; i++){
       num_elements *= memory_item->mem_nelem[i];
     }
 
     size_t numcells_glb;
     MPI_Allreduce(&memory_item->mem_nelem[0], &numcells_glb, 1, MPI_UINT64_T, MPI_SUM,
 		  MPI_COMM_WORLD);
+
+    printf("numcells_glb %d \n", numcells_glb);
     
     uint64_t *rncells; // All cell counts from each task
     
@@ -247,8 +249,6 @@ void Crux::store_MallocPlus(MallocPlus memory){
     rncells = (uint64_t *) malloc(npes*sizeof(uint64_t));
 
     MPI_Allgather(&memory_item->mem_nelem[0], 1, MPI_UNSIGNED_LONG_LONG, rncells, 1, MPI_LONG_LONG, MPI_COMM_WORLD);
-
-    //  printf("CRUX: %s %ld %ld \n",memory_item->mem_name, memory_item->mem_ncells_global,memory_item->mem_noffset);
 
     if (DEBUG) {
       printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
@@ -1164,6 +1164,11 @@ void Crux::restore_MallocPlus(MallocPlus memory){
    MPI_Comm_size(MPI_COMM_WORLD,&npes);
 #endif
 
+#ifdef HAVE_HDF5
+   hid_t gid, dset_id;
+   hid_t dtype;
+#endif
+
    malloc_plus_memory_entry *memory_item;
    for (memory_item = memory.memory_entry_by_name_begin(); 
       memory_item != memory.memory_entry_by_name_end();
@@ -1173,11 +1178,10 @@ void Crux::restore_MallocPlus(MallocPlus memory){
       if ((memory_item->mem_flags & RESTART_DATA) == 0) continue;
 
       int num_elements = 1;
-      for (uint i = 0; i < memory_item->mem_ndims; i++){
+      for (uint i = 1; i < memory_item->mem_ndims; i++){
 	 num_elements *= memory_item->mem_nelem[i];
       }
-      //if (DEBUG) {
-      if (1) {
+      if (DEBUG) {
         printf("MallocPlus ptr  %p: name %10s ptr %p dims %lu nelem (",
            mem_ptr,memory_item->mem_name,memory_item->mem_ptr,memory_item->mem_ndims);
 
@@ -1215,13 +1219,12 @@ void Crux::restore_MallocPlus(MallocPlus memory){
       }
 #ifdef HAVE_HDF5
       else {
-	if(strstr(memory_item->mem_name,"boot") != NULL) {
-	  hid_t gid, dset_id;
+	if(strstr(memory_item->mem_name,"bootstrap") != NULL) {
 	  gid = H5Gopen(h5_fid,"clamr", H5P_DEFAULT);
 	  if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
 	    printf("ERROR in restore checkpoint for clamr/%s\n",memory_item->mem_name);
 	  }
-	  hid_t dtype = H5Dget_type(dset_id);
+	  dtype = H5Dget_type(dset_id);
 	  H5Dread( dset_id, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
 	  H5Tclose(dtype);
 	  H5Gclose(gid);
@@ -1229,39 +1232,101 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	} else if( strcmp(memory_item->mem_name,"i")  || 
 		   strcmp(memory_item->mem_name,"j")  || 
 		   strcmp(memory_item->mem_name,"level")  ||
-		   strcmp(memory_item->mem_name,"amesh_int_dist_vals") ) {
-	  hid_t gid, dset_id;
+		   strcmp(memory_item->mem_name,"amesh_int_dist_vals") ||
+		   strcmp(memory_item->mem_name,"mesh_double_vals") ||
+		   strcmp(memory_item->mem_name,"mesh_int_vals") ) {
+
 	  gid = H5Gopen(h5_fid,"mesh", H5P_DEFAULT);
-	  if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
-	    printf("ERROR in restore checkpoint for clamr/%s\n",memory_item->mem_name);
-	  }
-	  hid_t dtype = H5Dget_type(dset_id);
-	  if( strcmp(memory_item->mem_name,"amesh_int_dist_vals") == 0 ) {
-
-	    hsize_t stride[2], block[2];
-	    hsize_t count[2], start[2];
-	    hsize_t dims[2];
+	  
+	  if( strcmp(memory_item->mem_name,"mesh_double_vals") == 0) {
+	    hid_t aid, atype;
+	    if( (aid = H5Aopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	      printf("ERROR in restore checkpoint for mesh/%s\n",memory_item->mem_name);
+	    }
+	    atype = H5Aget_type(aid);
+	    H5Aread(aid, atype, mem_ptr);
+	    
+	    H5Tclose(atype);
+	    H5Aclose(aid);
+	    H5Gclose(gid);
+	    
+	  } else if (strcmp(memory_item->mem_name,"mesh_int_vals") == 0) {
+	    hid_t did;
+	    if( (did = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	      printf("ERROR in restore checkpoint for mesh/%s\n",memory_item->mem_name);
+	    }
+	    dtype = H5Dget_type(did);
+	    H5Dread(did, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, mem_ptr);
+	    
+	    H5Tclose(dtype);
+	    H5Dclose(did);
+	    H5Gclose(gid);
+	    
+	  } else {
+	    if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	      printf("ERROR in restore checkpoint for mesh/%s num_elements %d\n",memory_item->mem_name,memory_item->mem_nelem[0]);
+	    }
+	    printf("restore checkpoint for mesh/%s num_elements %d\n",memory_item->mem_name,num_elements);
+	    dtype = H5Dget_type(dset_id);
 	    hid_t dataspace = H5Dget_space (dset_id);
-	    H5Sget_simple_extent_dims(dataspace, dims, NULL );
-
-	    start [0] = mype;
-	    start [1] = 0;
-	    count [0] = 1;
-	    count [1] = dims[1];
-
-	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+	    if( strcmp(memory_item->mem_name,"amesh_int_dist_vals") == 0 ) {
+	      hsize_t stride[2], block[2];
+	      hsize_t count[2], start[2];
+	      hsize_t dims[2];
+	      H5Sget_simple_extent_dims(dataspace, dims, NULL );
+	      
+	      start [0] = mype;
+	      start [1] = 0;
+	      count [0] = 1;
+	      count [1] = dims[1];
+	      
+	      H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
 
 // 	    hid_t memspace = H5Screate_simple (2, count, NULL);  
 // 	    H5Sselect_hyperslab(memspace, H5S_SELECT_SET, start, NULL, count, NULL);
 
-	    
-	    H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+	      H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+
+	      //	      printf("amesh_int_dist_vals %d %d %d %d \n",*((int *)mem_ptr + 0),
+	      //	     *((int *)mem_ptr + 1),*((int *)mem_ptr + 2),*((int *)mem_ptr + 3));
+
+	    } else {
+	      
+	      if( strcmp(memory_item->mem_name,"i") == 0 ||
+		  strcmp(memory_item->mem_name,"j") == 0 ||
+		  strcmp(memory_item->mem_name,"level") == 0 ) {
+		//hid_t filespace;
+		hid_t memspace;
+		hsize_t count[1], start[1];
+		hsize_t dims[1];
+		H5Sget_simple_extent_dims(dataspace, dims, NULL );
+		
+		int *ptr;
+		ptr = (int *)memory.get_memory_ptr("amesh_int_dist_vals");
+		
+		//filespace = H5Screate_simple (1, dims, NULL);
+		
+		start [0] = *(ptr + 1);
+		count [0] = 17000; //*(ptr + 0);
+		printf("amesh_int_dist_vals start, count : %d %d \n",  start[0], count[0]);
+		
+		// memspace = H5Screate_simple(1, count, NULL);
+		
+		H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+		//int val[17436];
+		H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+		//printf("b %d %d %d \n", val[0], val[1], val[2]);
+		//H5Sclose(filespace);
+		H5Sclose(dataspace);
+	      }
+	    }
+	    H5Tclose(dtype);
+	    H5Gclose(gid);
+	    H5Dclose(dset_id);
 	  }
-	  H5Tclose(dtype);
-	  H5Gclose(gid);
-	  H5Dclose(dset_id);
-	} else
+	} else {
 	  printf("Error: unknown dataset %s\n",memory_item->mem_name);
+	}
       }
 #endif
    }

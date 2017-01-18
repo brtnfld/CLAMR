@@ -235,7 +235,9 @@ int main(int argc, char **argv) {
       restore_crux_data_bootstrap(crux, restart_file, 0);
       mesh  = new Mesh(nx, ny, levmx, ndim, deltax_in, deltay_in, boundary, parallel_in, do_gpu_calc);
       
+      printf("after mesh->restore_MallocPlus\n");
       mesh->init(nx, ny, circ_radius, initial_order, do_gpu_calc);
+      printf("after mesh->init\n");
 
       state = new State(mesh);
       printf("here2 \n");
@@ -795,8 +797,6 @@ void store_crux_data(Crux *crux, int ncycle)
 
    int int_vals[num_int_vals];
    
-   
-
    int_vals[ 0] = CRUX_CLAMR_VERSION; // Version number
    int_vals[ 1] = nx;
    int_vals[ 2] = ny;
