@@ -87,6 +87,7 @@ using namespace PP;
 #define DEBUG 0
 #endif
 #undef DEBUG_RESTORE_VALS
+#define DEBUG_RESTORE_VALS 1
 
 #define MIN3(x,y,z) ( min( min(x,y), z) )
 

@@ -1314,7 +1314,7 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 		
 		H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
 		//int val[17436];
-		H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+		// MSB H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
 		//printf("b %d %d %d \n", val[0], val[1], val[2]);
 		//H5Sclose(filespace);
 		H5Sclose(dataspace);

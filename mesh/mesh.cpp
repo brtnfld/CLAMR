@@ -8003,7 +8003,7 @@ void Mesh::calc_celltype(size_t ncells)
       if (celltype != NULL) celltype = (int *)mesh_memory.memory_delete(celltype);
       celltype = (int *)mesh_memory.memory_malloc(ncells, sizeof(int), "celltype", flags);
    }
-
+   // MSB  printf(":AA %d\n", ncells);
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -8014,6 +8014,7 @@ void Mesh::calc_celltype(size_t ncells)
       if (is_bottom_boundary(ic) ) celltype[ic] = BOTTOM_BOUNDARY;
       if (is_top_boundary(ic))     celltype[ic] = TOP_BOUNDARY;
    }
+   // MSB  printf(":BB\n");
 }
 
 void Mesh::calc_symmetry(vector<int> &dsym, vector<int> &xsym, vector<int> &ysym)
