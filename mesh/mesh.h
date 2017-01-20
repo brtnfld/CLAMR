@@ -394,11 +394,12 @@ public:
 
    //   Member functions.
    void init(int nx, int ny, real_t circ_radius, partition_method initial_order, int do_gpu_calc);
+   void init_restart(int nx, int ny, real_t circ_radius, partition_method initial_order, int do_gpu_calc, char* restart_file);
    void terminate(void);
 
    void set_bounds(int n);
    void get_bounds(int& lowerBound, int& upperBound);
-
+   void get_numcells(char *restart_file, int *ncells_new);
 /****************************************************************//**
  * @name Memory routines
  *******************************************************************/

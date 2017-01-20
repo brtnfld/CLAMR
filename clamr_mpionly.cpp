@@ -236,14 +236,18 @@ int main(int argc, char **argv) {
       restore_crux_data_bootstrap(crux, restart_file, 0);
       mesh  = new Mesh(nx, ny, levmx, ndim, deltax_in, deltay_in, boundary, parallel_in, do_gpu_calc);
       
-      printf("after mesh->restore_MallocPlus\n");
-      mesh->init(nx, ny, circ_radius, initial_order, do_gpu_calc);
+      printf("mesh->init_restart\n");
+      MPI_Barrier(MPI_COMM_WORLD);
+      mesh->init_restart(nx, ny, circ_radius, initial_order, do_gpu_calc, restart_file);
       printf("after mesh->init\n");
+      MPI_Barrier(MPI_COMM_WORLD);
 
       state = new State(mesh);
-      printf("here2 \n");
+      //printf("here2 \n");
       restore_crux_data(crux);
-      printf("here3 \n");
+      //printf("here3 \n");
+      printf("after mesh->ncells %d\n",mesh->ncells);
+      MPI_Barrier(MPI_COMM_WORLD);
       mesh->proc.resize(mesh->ncells);
       mesh->calc_distribution(numpe);
    } else {
@@ -263,8 +267,11 @@ int main(int argc, char **argv) {
       state->init(do_gpu_calc);
    }
 
+   
+
    size_t &ncells = mesh->ncells;
    size_t &ncells_global = mesh->ncells_global;
+   //   printf("ncells, ncells_global %ld %ld ",ncells, ncells_global);
    int &noffset = mesh->noffset;
 
    vector<int>   &nsizes     = mesh->nsizes;
@@ -289,7 +296,8 @@ int main(int argc, char **argv) {
 
    state->resize(ncells);
 
-   state->fill_circle(circ_radius, 100.0, 7.0);
+   if(!restart) // MSB
+     state->fill_circle(circ_radius, 100.0, 7.0);
 
    x.clear();
    dx.clear();
@@ -941,12 +949,15 @@ void restore_crux_data(Crux *crux)
 {
    state->restore_checkpoint(crux);
 
-#ifndef HAVE_MPI
    crux->restore_end();
-#else
-   MPI_Finalize();
-   exit(0);
-#endif
+
+   // MSB COMMENTED
+// #ifndef HAVE_MPI
+//    crux->restore_end();
+// #else
+//    MPI_Finalize();
+//    exit(0);
+// #endif
 }
 
 

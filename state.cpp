@@ -943,7 +943,7 @@ void State::fill_circle(double  circ_radius,//  Radius of circle in grid units.
    vector<spatial_t> &dy = mesh->dy;
 
    for (uint ic = 0; ic < ncells; ic++)
-   {  H[ic] = background;
+   { H[ic] = background;
       U[ic] = V[ic] = 0.0; }
    
    //  Clear the old k-D tree and generate new data (slow but necessary here).
@@ -3103,7 +3103,7 @@ double State::mass_sum(int enhanced_precision_sum)
    double total_sum = 0.0;
 
    if (enhanced_precision_sum == SUM_KAHAN) {
-      //printf("DEBUG -- kahan_sum\n");
+     //printf("DEBUG -- kahan_sum\n");
       double corrected_next_term, new_sum;
       struct esum_type local;
 #ifdef HAVE_MPI
@@ -3120,6 +3120,7 @@ double State::mass_sum(int enhanced_precision_sum)
             new_sum            = local.sum + local.correction;
             local.correction   = corrected_next_term - (new_sum - local.sum);
             local.sum          = new_sum;
+	    //  printf("DEBUG -- kahan_sum %d %f\n",ic,H[ic]);
          }
       }
 

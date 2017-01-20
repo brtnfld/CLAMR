@@ -82,6 +82,7 @@ public:
    void store_end(void);
 
    void       restore_MallocPlus(MallocPlus memory);
+   void       restore_MallocPlus_pre(int *ncells_new);
    void       restore_begin(char *restart_file, int rollback_counter);
    void       restore_field_header(char *name, int name_size);
    void       restore_bools(bool *bool_vals, size_t nelem);

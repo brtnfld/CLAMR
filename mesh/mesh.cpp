@@ -78,6 +78,9 @@
 #include "reduce.h"
 #include "genmalloc/genmalloc.h"
 #include "hash/hash.h"
+#ifdef HAVE_HDF5
+#include "hdf5.h"
+#endif
 //bool USE_HDF5 = true; //MSB fix this make this global
 
 #define DEBUG 0
@@ -226,6 +229,8 @@ cl_kernel      kernel_set_boundary_refinement;
 
 extern size_t hash_header_size;
 extern int   choose_hash_method;
+
+int ncells_local1; 
 
 void Mesh::write_grid(int ncycle)
 {
@@ -1458,11 +1463,248 @@ void Mesh::init(int nx, int ny, real_t circ_radius, partition_method initial_ord
    if (ndim == TWO_DIMENSIONAL) ncells = nxx * nyy - have_boundary * 4;
    else                         ncells = nxx * nyy;
 
-   printf("MeshAA::init have_boundary %d %d %d %d\n",nxx, nyy, ncells,TWO_DIMENSIONAL);
-
    noffset = 0;
    if (parallel) {
       ncells_global = ncells;
+      
+      nsizes.resize(numpe);
+      ndispl.resize(numpe);
+
+      for (int ip=0; ip<numpe; ip++){
+         nsizes[ip] = ncells_global/numpe;
+         if (ip < (int)(ncells_global%numpe)) nsizes[ip]++;
+      }
+
+      ndispl[0]=0;
+      for (int ip=1; ip<numpe; ip++){
+         ndispl[ip] = ndispl[ip-1] + nsizes[ip-1];
+      }
+      ncells= nsizes[mype];
+      noffset=ndispl[mype];
+   }
+
+   allocate(ncells);
+   index.resize(ncells);
+
+   int ic = 0;
+
+   for (int jj = jstart; jj <= jend; jj++) {
+      for (int ii = istart; ii <= iend; ii++) {
+         if (have_boundary && ii == 0    && jj == 0   ) continue;
+         if (have_boundary && ii == 0    && jj == jend) continue;
+         if (have_boundary && ii == iend && jj == 0   ) continue;
+         if (have_boundary && ii == iend && jj == jend) continue;
+
+         if (ic >= (int)noffset && ic < (int)(ncells+noffset)){
+            int iclocal = ic-noffset;
+            index[iclocal] = ic;
+            i[iclocal]     = ii;
+            j[iclocal]     = jj;
+            level[iclocal] = 0;
+         }
+         ic++;
+      }
+   }
+
+#ifdef HAVE_MPI
+   if (parallel && numpe > 1) {
+      int ncells_int = ncells;
+      MPI_Allreduce(&ncells_int, &ncells_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+      MPI_Allgather(&ncells_int, 1, MPI_INT, &nsizes[0], 1, MPI_INT, MPI_COMM_WORLD);
+      ndispl[0]=0;
+      for (int ip=1; ip<numpe; ip++){
+         ndispl[ip] = ndispl[ip-1] + nsizes[ip-1];
+      }
+      noffset=ndispl[mype];
+   }
+#endif
+      
+   nlft = NULL;
+   nrht = NULL;
+   nbot = NULL;
+   ntop = NULL;
+   celltype = NULL;
+
+   //if (numpe > 1 && (initial_order != HILBERT_SORT && initial_order != HILBERT_PARTITION) ) mem_factor = 2.0;
+   partition_cells(numpe, index, initial_order);
+
+   calc_celltype(ncells);
+   calc_spatial_coordinates(0);
+
+   //  Start lev loop here
+   for (int ilevel=1; ilevel<=levmx; ilevel++) {
+
+      //int old_ncells = ncells;
+
+      ncells_ghost = ncells;
+      calc_neighbors_local();
+
+      kdtree_setup();
+
+      int nez;
+      vector<int> ind(ncells);
+
+#ifdef FULL_PRECISION
+      KDTree_QueryCircleIntersect_Double(&tree, &nez, &(ind[0]), circ_radius, ncells, &x[0], &dx[0], &y[0], &dy[0]);
+#else
+      KDTree_QueryCircleIntersect_Float(&tree, &nez, &(ind[0]), circ_radius, ncells, &x[0], &dx[0], &y[0], &dy[0]);
+#endif
+
+      vector<int> mpot(ncells_ghost,0);
+
+      for (int ic=0; ic<nez; ++ic){
+         if (level[ind[ic]] < levmx) mpot[ind[ic]] = 1;
+      }
+
+      KDTree_Destroy(&tree);
+      //  Refine the cells.
+      int icount = 0;
+      int jcount = 0;
+      int new_ncells = refine_smooth(mpot, icount, jcount);
+
+      MallocPlus dummy;
+      rezone_all(icount, jcount, mpot, 0, dummy);
+
+      ncells = new_ncells;
+   
+      calc_spatial_coordinates(0);
+
+#ifdef HAVE_MPI
+      if (parallel && numpe > 1) {
+         int ncells_int = ncells;
+         MPI_Allreduce(&ncells_int, &ncells_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   
+         MPI_Allgather(&ncells_int, 1, MPI_INT, &nsizes[0], 1, MPI_INT, MPI_COMM_WORLD);
+         ndispl[0]=0;
+         for (int ip=1; ip<numpe; ip++){
+            ndispl[ip] = ndispl[ip-1] + nsizes[ip-1];
+         }
+         noffset=ndispl[mype];
+      }
+#endif
+
+   }  // End lev loop here
+
+   index.clear();
+
+   int ncells_corners = 4;
+   int i_corner[] = {   0,   0,imax,imax};
+   int j_corner[] = {   0,jmax,   0,jmax};
+
+   for(int ic=0; ic<ncells_corners; ic++){
+      for (int    jj = j_corner[ic]*IPOW2(levmx); jj < (j_corner[ic]+1)*IPOW2(levmx); jj++) {
+         for (int ii = i_corner[ic]*IPOW2(levmx); ii < (i_corner[ic]+1)*IPOW2(levmx); ii++) {
+            corners_i.push_back(ii);
+            corners_j.push_back(jj);
+         }
+      }
+   }
+   ncells_ghost = ncells;
+}
+void Mesh::init_restart(int nx, int ny, real_t circ_radius, partition_method initial_order, int do_gpu_calc,
+			char* restart_file)
+{
+   if (do_gpu_calc) {
+#ifdef HAVE_OPENCL
+      cl_context context = ezcl_get_context();
+
+      hash_lib_init();
+      if (mype == 0) printf("Starting compile of kernels in mesh\n");
+      char *bothsources = (char *)malloc(strlen(mesh_kern_source)+strlen(get_hash_kernel_source_string())+1);
+      strcpy(bothsources, get_hash_kernel_source_string());
+      strcat(bothsources, mesh_kern_source);
+      strcat(bothsources, "\0");
+      const char *defines = NULL;
+      cl_program program = ezcl_create_program_wsource(context, defines, bothsources);
+      free(bothsources);
+
+      kernel_reduction_scan2          = ezcl_create_kernel_wprogram(program, "finish_reduction_scan2_cl");
+      kernel_reduction_count          = ezcl_create_kernel_wprogram(program, "finish_reduction_count_cl");
+      kernel_reduction_count2         = ezcl_create_kernel_wprogram(program, "finish_reduction_count2_cl");
+      kernel_hash_adjust_sizes        = ezcl_create_kernel_wprogram(program, "hash_adjust_sizes_cl");
+      kernel_hash_setup               = ezcl_create_kernel_wprogram(program, "hash_setup_cl");
+      kernel_hash_setup_local         = ezcl_create_kernel_wprogram(program, "hash_setup_local_cl");
+      kernel_neighbor_init            = ezcl_create_kernel_wprogram(program, "neighbor_init_cl");
+      kernel_calc_neighbors           = ezcl_create_kernel_wprogram(program, "calc_neighbors_cl");
+      kernel_calc_neighbors_local     = ezcl_create_kernel_wprogram(program, "calc_neighbors_local_cl");
+      kernel_calc_border_cells        = ezcl_create_kernel_wprogram(program, "calc_border_cells_cl");
+      kernel_calc_border_cells2       = ezcl_create_kernel_wprogram(program, "calc_border_cells2_cl");
+      kernel_finish_scan              = ezcl_create_kernel_wprogram(program, "finish_scan_cl");
+      kernel_get_border_data          = ezcl_create_kernel_wprogram(program, "get_border_data_cl");
+      kernel_calc_layer1              = ezcl_create_kernel_wprogram(program, "calc_layer1_cl");
+      kernel_calc_layer1_sethash      = ezcl_create_kernel_wprogram(program, "calc_layer1_sethash_cl");
+      kernel_calc_layer2              = ezcl_create_kernel_wprogram(program, "calc_layer2_cl");
+      kernel_get_border_data2         = ezcl_create_kernel_wprogram(program, "get_border_data2_cl");
+      kernel_calc_layer2_sethash      = ezcl_create_kernel_wprogram(program, "calc_layer2_sethash_cl");
+      kernel_copy_mesh_data           = ezcl_create_kernel_wprogram(program, "copy_mesh_data_cl");
+      kernel_fill_mesh_ghost          = ezcl_create_kernel_wprogram(program, "fill_mesh_ghost_cl");
+      kernel_fill_neighbor_ghost      = ezcl_create_kernel_wprogram(program, "fill_neighbor_ghost_cl");
+      kernel_set_corner_neighbor      = ezcl_create_kernel_wprogram(program, "set_corner_neighbor_cl");
+      kernel_adjust_neighbors_local   = ezcl_create_kernel_wprogram(program, "adjust_neighbors_local_cl");
+      kernel_hash_size                = ezcl_create_kernel_wprogram(program, "calc_hash_size_cl");
+      kernel_finish_hash_size         = ezcl_create_kernel_wprogram(program, "finish_reduction_minmax4_cl");
+      kernel_calc_spatial_coordinates = ezcl_create_kernel_wprogram(program, "calc_spatial_coordinates_cl");
+      kernel_do_load_balance_lower    = ezcl_create_kernel_wprogram(program, "do_load_balance_lower_cl");
+      kernel_do_load_balance_middle   = ezcl_create_kernel_wprogram(program, "do_load_balance_middle_cl");
+      kernel_do_load_balance_upper    = ezcl_create_kernel_wprogram(program, "do_load_balance_upper_cl");
+#ifndef MINIMUM_PRECISION
+      kernel_do_load_balance_double   = ezcl_create_kernel_wprogram(program, "do_load_balance_double_cl");
+#endif
+      kernel_do_load_balance_float    = ezcl_create_kernel_wprogram(program, "do_load_balance_float_cl");
+      kernel_refine_smooth            = ezcl_create_kernel_wprogram(program, "refine_smooth_cl");
+      kernel_coarsen_smooth           = ezcl_create_kernel_wprogram(program, "coarsen_smooth_cl");
+      kernel_coarsen_check_block      = ezcl_create_kernel_wprogram(program, "coarsen_check_block_cl");
+      kernel_rezone_all               = ezcl_create_kernel_wprogram(program, "rezone_all_cl");
+      kernel_rezone_neighbors         = ezcl_create_kernel_wprogram(program, "rezone_neighbors_cl");
+#ifndef MINIMUM_PRECISION
+      kernel_rezone_one_double        = ezcl_create_kernel_wprogram(program, "rezone_one_double_cl");
+#endif
+      kernel_rezone_one_float         = ezcl_create_kernel_wprogram(program, "rezone_one_float_cl");
+      kernel_copy_mpot_ghost_data     = ezcl_create_kernel_wprogram(program, "copy_mpot_ghost_data_cl");
+      kernel_set_boundary_refinement  = ezcl_create_kernel_wprogram(program, "set_boundary_refinement");
+      init_kernel_2stage_sum();
+      init_kernel_2stage_sum_int();
+      if (! have_boundary){
+        kernel_count_BCs              = ezcl_create_kernel_wprogram(program, "count_BCs_cl");
+      }
+
+      ezcl_program_release(program);
+      if (mype == 0) printf("Finishing compile of kernels in mesh\n");
+#endif
+   }
+
+   //KDTree_Initialize(&tree);
+
+   int istart = 1,
+       jstart = 1,
+       iend   = nx,
+       jend   = ny,
+       nxx    = nx,
+       nyy    = ny;
+   if (have_boundary) {
+      istart = 0;
+      jstart = 0;
+      iend   = nx + 1;
+      jend   = ny + 1;
+      nxx    = nx + 2;
+      nyy    = ny + 2;
+   }
+
+   if (ndim == TWO_DIMENSIONAL) ncells = nxx * nyy - have_boundary * 4;
+   else                         ncells = nxx * nyy;
+
+   int ncells_new;
+#ifdef HAVE_HDF5
+   //MSB   printf("get_numcells\n");
+   MPI_Barrier(MPI_COMM_WORLD);
+   get_numcells( restart_file, &ncells_new);
+   ncells = ncells_new;
+#endif
+   noffset = 0;
+   if (parallel) {
+      ncells_global = ncells;
+      printf("MeshAA::init have_boundary %d %d %d %d\n",nxx, nyy, ncells,TWO_DIMENSIONAL);
       
       nsizes.resize(numpe);
       ndispl.resize(numpe);
@@ -1530,61 +1772,6 @@ void Mesh::init(int nx, int ny, real_t circ_radius, partition_method initial_ord
 
    calc_celltype(ncells);
    calc_spatial_coordinates(0);
-
-   printf("Mesh::init2 \n");
-   //  Start lev loop here
-   for (int ilevel=1; ilevel<=levmx; ilevel++) {
-
-      //int old_ncells = ncells;
-
-      ncells_ghost = ncells;
-      calc_neighbors_local();
-
-      kdtree_setup();
-
-      int nez;
-      vector<int> ind(ncells);
-
-#ifdef FULL_PRECISION
-      KDTree_QueryCircleIntersect_Double(&tree, &nez, &(ind[0]), circ_radius, ncells, &x[0], &dx[0], &y[0], &dy[0]);
-#else
-      KDTree_QueryCircleIntersect_Float(&tree, &nez, &(ind[0]), circ_radius, ncells, &x[0], &dx[0], &y[0], &dy[0]);
-#endif
-
-      vector<int> mpot(ncells_ghost,0);
-
-      for (int ic=0; ic<nez; ++ic){
-         if (level[ind[ic]] < levmx) mpot[ind[ic]] = 1;
-      }
-
-      KDTree_Destroy(&tree);
-      //  Refine the cells.
-      int icount = 0;
-      int jcount = 0;
-      int new_ncells = refine_smooth(mpot, icount, jcount);
-
-      MallocPlus dummy;
-      rezone_all(icount, jcount, mpot, 0, dummy);
-
-      ncells = new_ncells;
-   
-      calc_spatial_coordinates(0);
-
-#ifdef HAVE_MPI
-      if (parallel && numpe > 1) {
-         int ncells_int = ncells;
-         MPI_Allreduce(&ncells_int, &ncells_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-   
-         MPI_Allgather(&ncells_int, 1, MPI_INT, &nsizes[0], 1, MPI_INT, MPI_COMM_WORLD);
-         ndispl[0]=0;
-         for (int ip=1; ip<numpe; ip++){
-            ndispl[ip] = ndispl[ip-1] + nsizes[ip-1];
-         }
-         noffset=ndispl[mype];
-      }
-#endif
-
-   }  // End lev loop here
 
    index.clear();
 
@@ -10312,9 +10499,15 @@ void Mesh::restore_checkpoint(Crux *crux)
    printf("crux->restore_MallocPlus(mesh_memory)\n");
 
    //not needed?   allocate(ncells);
+   int ncells_new;
+#ifdef HAVE_HDF5
+   crux->restore_MallocPlus_pre(&ncells_new);
+   ncells_local1 = ncells_new;
+#endif
 
    // Resize is a mesh method
-   resize(ncells);
+   resize(ncells_new);
+   
    memory_reset_ptrs();
    
    int flags = RESTART_DATA;
@@ -10590,6 +10783,55 @@ void Mesh::set_bounds(int n){
         int upperBound = ncells;
         lowerBound_Global[0] = lowerBound;
         upperBound_Global[0] = upperBound;
+#endif
+
+}
+
+void Mesh::get_numcells(char *restart_file, int *ncells_new){
+
+#ifdef HAVE_HDF5
+   hid_t gid, dset_id;
+   hid_t dtype;
+   hid_t fapl_id;
+   hid_t h5_fid;
+
+   fapl_id = H5Pcreate( H5P_FILE_ACCESS );
+   H5Pset_fapl_mpio(fapl_id, MPI_COMM_WORLD, MPI_INFO_NULL);
+   if( (h5_fid = H5Fopen(restart_file, H5F_ACC_RDONLY, fapl_id)) < 0) {
+     printf("Could not open restart file %s\n",restart_file);
+   }
+   H5Pclose( fapl_id );
+
+   if( (dset_id = H5Dopen(h5_fid, "mesh/amesh_int_dist_vals", H5P_DEFAULT)) < 0) {
+     printf("ERROR in restore checkpoint for mesh/amesh_int_dist_vals\n");
+   }
+   dtype = H5Dget_type(dset_id);
+   hid_t dataspace = H5Dget_space (dset_id);
+   hsize_t stride[2], block[2];
+   hsize_t count[2], start[2];
+   hsize_t dims[2];
+   int tmp;
+   int mype;
+
+#ifdef HAVE_MPI
+   MPI_Comm_rank(MPI_COMM_WORLD,&mype);
+#endif
+
+   H5Sget_simple_extent_dims(dataspace, dims, NULL );
+   
+   start [0] = mype;
+   start [1] = 0;
+   count [0] = 1;
+   count [1] = 1;
+   
+   H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+
+   H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, &tmp);
+   *ncells_new = tmp;
+
+   H5Tclose(dtype);
+   H5Dclose(dset_id);
+   H5Fclose(h5_fid);
 #endif
 
 }

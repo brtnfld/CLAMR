@@ -100,6 +100,9 @@ hid_t tid1;
 hid_t rid1, rid2;
 #endif
 
+int ncells_local;
+int noffset_local;
+
 FILE *crux_time_fp;
 struct timeval tcheckpoint_time;
 struct timeval trestore_time;
@@ -1229,6 +1232,56 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	  H5Tclose(dtype);
 	  H5Gclose(gid);
 	  H5Dclose(dset_id);
+
+	} else if ( strcmp(memory_item->mem_name,"H") == 0  || 
+		    strcmp(memory_item->mem_name,"U") == 0   || 
+		    strcmp(memory_item->mem_name,"V") == 0  ||
+		    strstr(memory_item->mem_name,"state_") != NULL) {
+
+
+	  gid = H5Gopen(h5_fid,"state", H5P_DEFAULT);
+	  if( (dset_id = H5Dopen(gid, memory_item->mem_name, H5P_DEFAULT)) < 0) {
+	    printf("ERROR in restore checkpoint for state/%s\n",memory_item->mem_name);
+	  }
+	  dtype = H5Dget_type(dset_id);
+	  hid_t dataspace = H5Dget_space (dset_id);
+	  hid_t memspace;
+
+	  if (strstr(memory_item->mem_name,"_timers") == NULL) {
+	    printf("memory_item->mem_name1 %s\n", memory_item->mem_name);
+	    hsize_t dims[1];
+	    hsize_t count[1], start[1];
+	    H5Sget_simple_extent_dims(dataspace, dims, NULL );
+	    start[0] = noffset_local;
+	    if( strcmp(memory_item->mem_name,"state_int_vals") == 0 ) {
+	      count[0] = dims[0];
+	    } else {
+	      count[0] = ncells_local;
+	    }
+	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+
+	  } else {
+	    hsize_t dims[2];
+	    hsize_t count[2], start[2];
+	    H5Sget_simple_extent_dims(dataspace, dims, NULL );
+	    start[0] = mype;
+	    start[1] = 0;
+	    count[0] = 1;
+	    count[1] = dims[1];
+	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+	  }
+		
+	  // memspace = H5Screate_simple(1, count, NULL);
+		
+	  H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+
+	  //H5Sclose(filespace);
+	  H5Sclose(dataspace);
+	  H5Dclose(dset_id);
+	  H5Tclose(dtype);
+	  H5Gclose(gid);
+
+
 	} else if( strcmp(memory_item->mem_name,"i")  || 
 		   strcmp(memory_item->mem_name,"j")  || 
 		   strcmp(memory_item->mem_name,"level")  ||
@@ -1303,18 +1356,21 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 		
 		int *ptr;
 		ptr = (int *)memory.get_memory_ptr("amesh_int_dist_vals");
+
+		ncells_local=*(ptr + 0);
+		noffset_local=*(ptr + 1);
 		
 		//filespace = H5Screate_simple (1, dims, NULL);
 		
 		start [0] = *(ptr + 1);
-		count [0] = 17000; //*(ptr + 0);
+		count [0] = *(ptr + 0);
 		printf("amesh_int_dist_vals start, count : %d %d \n",  start[0], count[0]);
 		
 		// memspace = H5Screate_simple(1, count, NULL);
 		
 		H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
 		//int val[17436];
-		// MSB H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+		H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
 		//printf("b %d %d %d \n", val[0], val[1], val[2]);
 		//H5Sclose(filespace);
 		H5Sclose(dataspace);
@@ -1332,6 +1388,40 @@ void Crux::restore_MallocPlus(MallocPlus memory){
    }
 
 }
+
+void Crux::restore_MallocPlus_pre(int *ncells_new){
+
+#ifdef HAVE_HDF5
+   hid_t gid, dset_id;
+   hid_t dtype;
+
+   if( (dset_id = H5Dopen(h5_fid, "mesh/amesh_int_dist_vals", H5P_DEFAULT)) < 0) {
+     printf("ERROR in restore checkpoint for mesh/amesh_int_dist_vals\n");
+   }
+   dtype = H5Dget_type(dset_id);
+   hid_t dataspace = H5Dget_space (dset_id);
+   hsize_t stride[2], block[2];
+   hsize_t count[2], start[2];
+   hsize_t dims[2];
+   int tmp;
+   H5Sget_simple_extent_dims(dataspace, dims, NULL );
+   
+   start [0] = mype;
+   start [1] = 0;
+   count [0] = 1;
+   count [1] = 1;
+   
+   H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+
+   H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, &tmp);
+   *ncells_new = tmp;
+
+   H5Tclose(dtype);
+   H5Dclose(dset_id);
+#endif
+}
+
+
 
 void Crux::restore_begin(char *restart_file, int rollback_counter)
 {

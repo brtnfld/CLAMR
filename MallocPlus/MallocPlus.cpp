@@ -173,7 +173,7 @@ void *MallocPlus::memory_malloc(size_t nelem, size_t elsize, const char *name, i
    memory_name_dict.insert(std::pair<string, malloc_plus_memory_entry*>(name, memory_item) );
    memory_ptr_dict.insert(std::pair<void*, malloc_plus_memory_entry*>(memory_item->mem_ptr, memory_item) );
 
-   //if (DEBUG) 
+   if (DEBUG) 
      printf("MALLOC_PLUS_MEMORY_MALLOC: DEBUG -- malloc plus memory pointer for :%s: is %p nelements %ld elsize is %ld\n",memory_item->mem_name,memory_item->mem_ptr,memory_item->mem_nelem[0],memory_item->mem_elsize);
 
    // return the pointer for use by the calling routine
