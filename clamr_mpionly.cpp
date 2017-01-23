@@ -307,7 +307,6 @@ int main(int argc, char **argv) {
    if (graphic_outputInterval > niter) next_graphics_cycle = graphic_outputInterval;
    if (checkpoint_outputInterval > niter) next_cp_cycle = checkpoint_outputInterval;
 
-
    //  Kahan-type enhanced precision sum implementation.
    double H_sum = state->mass_sum(enhanced_precision_sum);
    if (mype == 0) printf ("Mass of initialized cells equal to %14.12lg\n", H_sum);
@@ -401,7 +400,7 @@ int main(int argc, char **argv) {
    set_display_outline((int)outline);
    set_display_viewmode(view_mode);
 #endif
-
+   
    if (ncycle == next_graphics_cycle){
       set_graphics_outline(outline);
       set_graphics_window((float)mesh->xmin, (float)mesh->xmax,

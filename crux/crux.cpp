@@ -1248,17 +1248,21 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	  hid_t memspace;
 
 	  if (strstr(memory_item->mem_name,"_timers") == NULL) {
-	    printf("memory_item->mem_name1 %s\n", memory_item->mem_name);
+	    //printf("memory_item->mem_name1 %s\n", memory_item->mem_name);
 	    hsize_t dims[1];
 	    hsize_t count[1], start[1];
 	    H5Sget_simple_extent_dims(dataspace, dims, NULL );
 	    start[0] = noffset_local;
 	    if( strcmp(memory_item->mem_name,"state_int_vals") == 0 ) {
-	      count[0] = dims[0];
+	      start[0] = mype;
+	      count[0] = 1;
+	      printf("memory_item->mem_name1 %s\n", memory_item->mem_name);
+	      printf("count start %d %d \n",count[0], start[0]);
 	    } else {
 	      count[0] = ncells_local;
 	    }
 	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+	    memspace = H5Screate_simple(1, &count[0], NULL);
 
 	  } else {
 	    hsize_t dims[2];
@@ -1269,13 +1273,13 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	    count[0] = 1;
 	    count[1] = dims[1];
 	    H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
+	    memspace = H5Screate_simple(1, &count[1], NULL);
 	  }
 		
-	  // memspace = H5Screate_simple(1, count, NULL);
 		
-	  H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+	  H5Dread( dset_id, dtype, memspace, dataspace, H5P_DEFAULT, mem_ptr);
 
-	  //H5Sclose(filespace);
+	  H5Sclose(memspace);
 	  H5Sclose(dataspace);
 	  H5Dclose(dset_id);
 	  H5Tclose(dtype);
@@ -1322,6 +1326,7 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	    printf("restore checkpoint for mesh/%s num_elements %d\n",memory_item->mem_name,num_elements);
 	    dtype = H5Dget_type(dset_id);
 	    hid_t dataspace = H5Dget_space (dset_id);
+	    hid_t memspace;
 	    if( strcmp(memory_item->mem_name,"amesh_int_dist_vals") == 0 ) {
 	      hsize_t stride[2], block[2];
 	      hsize_t count[2], start[2];
@@ -1335,12 +1340,14 @@ void Crux::restore_MallocPlus(MallocPlus memory){
 	      
 	      H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, start, NULL, count, NULL);
 
-// 	    hid_t memspace = H5Screate_simple (2, count, NULL);  
-// 	    H5Sselect_hyperslab(memspace, H5S_SELECT_SET, start, NULL, count, NULL);
+	      memspace = H5Screate_simple (1, &count[1], NULL); 
 
-	      H5Dread( dset_id, dtype, H5S_ALL, dataspace, H5P_DEFAULT, mem_ptr);
+	      H5Dread( dset_id, dtype, memspace, dataspace, H5P_DEFAULT, mem_ptr);
 
-	      //	      printf("amesh_int_dist_vals %d %d %d %d \n",*((int *)mem_ptr + 0),
+	      H5Sclose(memspace);
+	      H5Sclose(dataspace);
+
+	      //  printf("amesh_int_dist_vals33333 %d %d %d %d \n",*((int *)mem_ptr + 0),
 	      //	     *((int *)mem_ptr + 1),*((int *)mem_ptr + 2),*((int *)mem_ptr + 3));
 
 	    } else {
